@@ -1,0 +1,40 @@
+name: Build Lecture Studio for macOS
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      ANNIE_DATA_DIR: ${{ runner.temp }}/annie-test-profile
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r packaging/requirements-macos.txt
+      - name: Stage only shareable Studio files
+        run: python -c "from pathlib import Path; from tools.build_studio_macos import stage_macos; stage_macos(Path('clean-studio'))"
+      - name: Run Studio tests in a clean profile
+        working-directory: clean-studio
+        run: python -m unittest discover -s tests -v
+      - name: Cache public transcription model for offline smoke test
+        run: python -c "from faster_whisper.utils import download_model; download_model('base', output_dir='native-test-model')"
+      - name: Compile native audio, build both executables and test generated speech
+        working-directory: clean-studio
+        run: python tools/build_studio_macos.py --ci --smoke-model ../native-test-model
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LectureStudio-${{ matrix.runner }}-unnotarized
+          path: clean-studio/releases/*
+          if-no-files-found: error
+          retention-days: 14

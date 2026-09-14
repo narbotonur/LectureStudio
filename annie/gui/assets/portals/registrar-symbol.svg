@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Clipboard and pencil, matching the supplied Registrar reference. -->
+  <g stroke="#4c525d" stroke-width="8" stroke-linejoin="round" stroke-linecap="round">
+    <rect x="9" y="34" width="173" height="214" rx="20" fill="#dbe3e9"/>
+    <path d="M62 19h3c2-9 5-12 13-12h37c8 0 12 3 14 12h6c7 0 11 5 11 12v10c0 5-3 8-8 8H55c-5 0-8-3-8-8V31c0-7 6-12 15-12z" fill="#fa7883"/>
+    <path d="M79 32h34"/>
+    <circle cx="55" cy="85" r="12" fill="#fff"/>
+    <path d="M32 121c1-15 10-23 23-23s24 8 26 23z" fill="#fff"/>
+    <path d="M111 82h51M111 115h49M32 149h130M32 183h110M32 216h103"/>
+    <path d="M163 184l-12 33 32-5 64-100c5-9 2-18-6-23-8-5-16-3-22 5z" fill="#ffe071"/>
+    <path d="M163 184l20 28 58-89-24-17z" fill="#68bced"/>
+    <path d="M163 184l-12 33 32-5z" fill="#fff3e4"/>
+  </g>
+</svg>

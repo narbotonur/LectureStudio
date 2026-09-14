@@ -1,0 +1,20 @@
+# Direct build/runtime dependencies tested on Windows x64, Python 3.14.3.
+PyQt5==5.15.11
+numpy==2.4.4
+sounddevice==0.5.5
+SoundCard==0.4.6
+faster-whisper==1.2.1
+onnxruntime==1.24.4; sys_platform != 'darwin'
+google-genai==2.18.1
+google-auth-oauthlib==1.4.0
+google-api-python-client==2.198.0
+google-auth-httplib2==0.4.1
+requests==2.33.1
+tzdata>=2025.3
+pypdf==6.16.2
+Pillow==12.2.0
+psutil==7.2.2
+pywin32==311; sys_platform == 'win32'
+pycaw==20251023; sys_platform == 'win32'
+comtypes==1.4.16; sys_platform == 'win32'
+pyinstaller==6.19.0

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">
+  <!-- Green calendar and six day dots from the supplied LibCal reference. -->
+  <g fill="none" stroke="#82bf34" stroke-width="22" stroke-linejoin="round">
+    <rect x="37" y="48" width="226" height="218" rx="13"/>
+    <path d="M38 111h223M78 19v47M220 19v47"/>
+  </g>
+  <g fill="#82bf34">
+    <circle cx="93" cy="163" r="15"/><circle cx="150" cy="163" r="15"/><circle cx="207" cy="163" r="15"/>
+    <circle cx="93" cy="218" r="15"/><circle cx="150" cy="218" r="15"/><circle cx="207" cy="218" r="15"/>
+  </g>
+</svg>
