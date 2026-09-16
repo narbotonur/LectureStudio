@@ -378,6 +378,7 @@ class DesktopSurfaceTests(unittest.TestCase):
         self.assertIsNone(find_desktop_host(gui))
 
 
+@unittest.skipUnless(sys.platform == 'win32', 'Windows desktop pinning')
 class DesktopPinTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()

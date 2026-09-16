@@ -120,7 +120,8 @@ class DownloadTests(unittest.TestCase):
         staged = stage_windows(self.make_archive(), target)
         self.assertEqual((target / 'LectureStudio.exe').read_bytes(), b'old-gui')
         self.assertEqual((staged / 'LectureStudio.exe').read_bytes(), b'new-gui')
-        self.assertEqual(staged.parent.parent, target.parent)
+        # macOS exposes /var through /private/var, so compare canonical paths.
+        self.assertEqual(staged.parent.parent, target.parent.resolve())
         with self.assertRaises(UpdateError):
             stage_windows(self.make_archive(), self.root)
 
