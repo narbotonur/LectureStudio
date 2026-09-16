@@ -8,6 +8,8 @@ if sys.platform != 'darwin':
     raise RuntimeError('Build the macOS bundle on a Mac using its native Python architecture.')
 
 root = Path(SPECPATH).parent
+import runpy
+studio_version = runpy.run_path(str(root / 'annie/version.py'))['VERSION']
 datas = [(str(root / 'annie/gui/assets/portals'), 'annie/gui/assets/portals')]
 datas += collect_data_files('tzdata')
 helper = root / 'native/macos/bin/LectureAudioCapture'
@@ -53,7 +55,7 @@ coll = COLLECT(gui, worker, a.binaries, a.datas, strip=False, upx=False, name='L
 # COLLECT inherits console=True from the worker. Passing gui last explicitly
 # gives BUNDLE the GUI's activation policy while keeping both executables.
 app = BUNDLE(coll, gui, name='Lecture Studio.app', bundle_identifier='local.annie.lecture-studio',
-             version='0.1.0', info_plist={
+             version=studio_version, info_plist={
                  'CFBundleDisplayName': 'Lecture Studio',
                  'LSMinimumSystemVersion': '14.0',
                  # Start quietly. Normal Studio windows opt into a Dock icon

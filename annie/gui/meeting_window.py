@@ -635,6 +635,10 @@ class MeetingWindow(QDialog):
         header.addWidget(self.pin_btn)
         layout.addWidget(self.header_panel)
 
+        from annie.gui.studio_updates import UpdatePanel
+        self.updates_panel = UpdatePanel(self)
+        layout.addWidget(self.updates_panel)
+
         self.recording_panel = role(QFrame(), "recordingBar")
         self.recording_panel.setMinimumHeight(76)
         recording_bar = QHBoxLayout(self.recording_panel)
@@ -702,6 +706,7 @@ class MeetingWindow(QDialog):
             setattr(self, attr, button)
             nav_bar.addWidget(button)
         nav_bar.addStretch()
+        nav_bar.addWidget(self.updates_panel.check_button)
         self.tools_btn = QPushButton("More")
         menu = QMenu(self.tools_btn)
         from annie.prayer_startup import launch as launch_prayer_widget
@@ -1500,9 +1505,13 @@ class MeetingWindow(QDialog):
 
     def has_running_jobs(self):
         return (any(job.isRunning() for job in self._jobs) or
+                self.updates_panel.service.is_running() or
                 self.timetable_view.has_running_job() or self.study_page.has_running_job())
 
     def stop_jobs(self):
+        self.updates_panel.service.stop()
+        if self.updates_panel.dialog is not None:
+            self.updates_panel.dialog.close()
         self.study_page.stop_background()
         if self._mini_dock is not None:
             self._mini_dock.hide_immediately()

@@ -1,6 +1,11 @@
 name: Build Lecture Studio for macOS
 on:
   workflow_dispatch:
+    inputs:
+      create_draft:
+        description: Create a draft GitHub release after successful builds
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -38,3 +43,29 @@ jobs:
           path: clean-studio/releases/*
           if-no-files-found: error
           retention-days: 14
+  draft-release:
+    if: ${{ inputs.create_draft }}
+    needs: mac
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: LectureStudio-*-unnotarized
+          path: installers
+          merge-multiple: true
+      - name: Create versioned draft with notes and installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version=$(python -c "from annie.version import VERSION; print(VERSION)")
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          gh release create "v$version" installers/* \
+            --draft --target "$GITHUB_SHA" --title "Lecture Studio $version" \
+            --notes-file packaging/RELEASE_NOTES.md

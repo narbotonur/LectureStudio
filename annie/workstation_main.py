@@ -76,11 +76,14 @@ def main(watch_only=None):
 
     shutdown_started = False
     shutdown_timer = QTimer(app)
+    from annie.updates import UpdateService
+    update_service = UpdateService(app) if watch_only else None
 
     def finish_shutdown():
         from annie.whisper_service import whisper_service_is_running
         studio = studio_holder[0]
         if (controller.has_running_job() or
+                (update_service and update_service.is_running()) or
                 (studio and studio.has_running_jobs()) or
                 whisper_service_is_running()):
             return
@@ -96,6 +99,8 @@ def main(watch_only=None):
         shutdown_started = True
         router.begin_shutdown()
         controller.stop()
+        if update_service:
+            update_service.stop()
         if studio_holder[0]:
             studio_holder[0].stop_jobs()
         from annie.whisper_service import shutdown_whisper_service
@@ -108,11 +113,28 @@ def main(watch_only=None):
         tray.setToolTip('Lecture Studio · Meeting and lecture reminders')
         tray_menu = QMenu()
         tray_menu.addAction('Open Lecture Studio', lambda: router.request())
+        update_action = tray_menu.addAction('Updates · Open Studio', lambda: router.request())
         tray_menu.addAction('Quit watcher', begin_shutdown)
         tray.setContextMenu(tray_menu)
         tray.activated.connect(lambda reason: router.request() if reason == QSystemTrayIcon.DoubleClick else None)
         tray.show()
         app.aboutToQuit.connect(tray.hide)
+        announced_updates = set()
+
+        def update_notice():
+            if shutdown_started or not update_service.available:
+                return
+            tag = update_service.state['release']['tag_name']
+            update_action.setText(f'Update is available · {tag} · Open Studio')
+            if tag not in announced_updates:
+                announced_updates.add(tag)
+                tray.showMessage('Lecture Studio · Update is available',
+                                 f'{tag} is ready. Open Studio to see what changed.',
+                                 QSystemTrayIcon.Information, 8000)
+
+        tray.messageClicked.connect(lambda: router.request())
+        update_service.changed.connect(update_notice)
+        update_service.start_automatic()
 
     if not watch_only:
         def routed(action):
@@ -125,6 +147,8 @@ def main(watch_only=None):
 
     def final_cleanup():
         controller.stop()
+        if update_service:
+            update_service.stop()
         if studio_holder[0]:
             studio_holder[0].stop_jobs()
         from annie.whisper_service import shutdown_whisper_service

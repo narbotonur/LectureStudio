@@ -12,11 +12,11 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = ('__init__', 'paths', 'platform_support', 'macos_support', 'macos_audio', 'secure_storage', 'startup', 'config', 'workstation_main',
-           'studio_router', 'meeting_prompt', 'calendar_service', 'study_sessions', 'study_guide',
+           'studio_router', 'meeting_prompt', 'calendar_service', 'study_sessions', 'study_guide', 'updates', 'version',
            'meeting', 'dsp', 'audio_io', 'recording_audio', 'whisper_service', 'whisper_worker',
            'whisper_runtime', 'whisper_models', 'whisper_events', 'release_check',
            'prayer_times', 'prayer_startup', 'prayer_widget_main', 'desktop_pin')
-GUI = ('__init__', 'design', 'meeting_window', 'studio_dock', 'week_calendar', 'study_timer', 'studio_setup', 'prayer_widget', 'prayer_card')
+GUI = ('__init__', 'design', 'meeting_window', 'studio_dock', 'week_calendar', 'study_timer', 'studio_setup', 'studio_updates', 'prayer_widget', 'prayer_card')
 DENIED = ('token.json', 'credentials.json', 'annie_settings.json', 'study_sessions.sqlite3',
           'accounts.dpapi', 'calendar.dpapi', 'google-client.dpapi', 'lecture_schedule_cache.json',
           'prayer-widget.json', 'prayer-times-cache.json')
@@ -55,6 +55,8 @@ def stage(destination):
     target.mkdir(exist_ok=True)
     shutil.copy2(ROOT / 'packaging/lecture_studio.spec', target)
     shutil.copy2(ROOT / 'packaging/PRAYER_WIDGET.md', target)
+    shutil.copy2(ROOT / 'packaging/UPDATES.md', target)
+    shutil.copy2(ROOT / 'packaging/RELEASE_NOTES.md', target)
 
 
 def main():

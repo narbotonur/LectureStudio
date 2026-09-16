@@ -34,6 +34,10 @@ Native recording and packaging still require testing on a real Mac.
 
 ## Modes
 
+**Check for updates** in the sidebar shows the latest release and its changes.
+The watcher checks at startup and then once per day, and announces available updates.
+See [publishing and installing updates](packaging/UPDATES.md).
+
 ```text
 python lecture_studio_entry.py                 Open Studio
 python lecture_studio_entry.py --watch         Silent meeting/lecture reminders
