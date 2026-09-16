@@ -59,7 +59,12 @@ def parse_release(payload):
         name = asset.get('name')
         link = release_url(asset.get('browser_download_url'), download=True)
         if isinstance(name, str) and link and asset.get('state', 'uploaded') == 'uploaded':
-            assets.append({'name': name[:250], 'browser_download_url': link})
+            size = asset.get('size')
+            digest = asset.get('digest')
+            assets.append({'name': name[:250], 'browser_download_url': link,
+                           'size': size if isinstance(size, int) and size > 0 else None,
+                           'digest': digest if isinstance(digest, str) and
+                           re.fullmatch(r'sha256:[0-9a-fA-F]{64}', digest) else None})
     body = payload.get('body')
     return {'tag_name': tag, 'html_url': url,
             'body': body[:60000] if isinstance(body, str) else '', 'assets': assets}

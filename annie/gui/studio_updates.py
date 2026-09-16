@@ -1,19 +1,23 @@
 """Non-modal update notice and release notes, using the Studio visual system."""
 import sys
+from pathlib import Path
 
 from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtGui import QDesktopServices
-from PyQt5.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout
+from PyQt5.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextEdit,
+                            QVBoxLayout, QProgressBar, QMessageBox)
 
-from annie.gui.design import STYLE, label, role
+from annie.gui.design import ACCENT, BORDER, STYLE, SURFACE, label, role
 from annie.updates import RELEASES_URL, UpdateService, select_download
 from annie.version import VERSION
+from annie.update_download import DownloadService, installed_windows_directory, launch_windows_install
 
 
 class UpdateDialog(QDialog):
-    def __init__(self, service, parent=None):
+    def __init__(self, service, downloads, parent=None):
         super().__init__(parent)
         self.service = service
+        self.downloads = downloads
         self.setWindowTitle('Lecture Studio · Updates')
         self.setStyleSheet(STYLE)
         self.resize(560, 490)
@@ -34,6 +38,18 @@ class UpdateDialog(QDialog):
         self.help = label('', 'muted')
         self.help.setWordWrap(True)
         layout.addWidget(self.help)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1000)
+        self.progress.setTextVisible(False)
+        self.progress.setStyleSheet(
+            f'QProgressBar {{ background: {SURFACE}; border: 1px solid {BORDER}; '
+            f'border-radius: 6px; text-align: center; min-height: 18px; }} '
+            f'QProgressBar::chunk {{ background: {ACCENT}; border-radius: 5px; }}')
+        layout.addWidget(self.progress)
+        self.transfer_status = QLabel()
+        self.transfer_status.setWordWrap(True)
+        self.transfer_status.setTextFormat(Qt.PlainText)
+        layout.addWidget(self.transfer_status)
         actions = QHBoxLayout()
         self.retry = QPushButton('Check again')
         self.retry.clicked.connect(lambda: service.check(manual=True))
@@ -44,15 +60,19 @@ class UpdateDialog(QDialog):
         self.download = role(QPushButton('Download update'), 'primary')
         self.download.clicked.connect(self.open_download)
         actions.addWidget(self.download)
+        self.cancel_download = QPushButton('Cancel download')
+        self.cancel_download.clicked.connect(downloads.cancel)
+        actions.addWidget(self.cancel_download)
         layout.addLayout(actions)
         service.changed.connect(self.refresh)
+        downloads.changed.connect(self.refresh_transfer)
         self.refresh()
 
     def refresh(self):
         state = self.service.state
         release = state.get('release')
         busy = self.service.worker is not None
-        self.retry.setEnabled(not busy)
+        self.retry.setEnabled(not busy and self.downloads.worker is None)
         self.download.setVisible(self.service.available and select_download(release) is not None)
         if busy:
             self.heading.setText('Checking for updates…')
@@ -73,22 +93,85 @@ class UpdateDialog(QDialog):
         if not getattr(sys, 'frozen', False):
             hint = 'Running from source? Update your Git checkout and dependencies, or install the app from the release.'
         elif sys.platform == 'darwin':
-            hint = 'Download the DMG, finish your recording, quit Studio and the watcher, then replace Lecture Studio in Applications. Your profile stays in place.'
+            hint = 'Download here, then open the DMG and replace Lecture Studio in Applications. Finish your recording and quit Studio and the watcher before replacing it.'
+        elif installed_windows_directory() is not None:
+            hint = 'Download here, then choose Install and restart. Quit the watcher first. The previous app is kept as a backup; your profile stays in place.'
         else:
-            hint = 'Finish your recording and quit Studio and the watcher before installing the update. Your profile stays in place.'
+            hint = 'Download and open the ZIP, quit Studio and the watcher, then replace your app folder with the LectureStudio folder from the archive. Your profile stays in place.'
         if self.service.available and not select_download(release):
             hint = 'No installer for this device is attached yet. Open the release for available files.\n' + hint
         self.help.setText(hint)
+        self.refresh_transfer()
+
+    def refresh_transfer(self):
+        busy = self.downloads.worker is not None
+        result = self.downloads.result
+        release = self.service.state.get('release')
+        if result and release and result['tag'] != release['tag_name']:
+            self.downloads.result = result = None
+            self.downloads.error = 'A newer release is available. Download the latest version.'
+        self.retry.setEnabled(not busy and self.service.worker is None)
+        self.download.setEnabled(not busy and self.service.worker is None)
+        self.cancel_download.setVisible(busy)
+        self.progress.setVisible(busy)
+        if result:
+            self.download.setVisible(True)
+            self.download.setText('Install and restart' if result.get('staged') else
+                                  'Open DMG' if result['path'].lower().endswith('.dmg') else 'Open downloaded ZIP')
+            self.transfer_status.setText(f"{result['tag']} downloaded and verified. Ready to install.")
+        elif busy:
+            done, total = self.downloads.done, self.downloads.total
+            self.progress.setRange(0, 1000 if total else 0)
+            if total:
+                self.progress.setValue(min(1000, int(done * 1000 / total)))
+            suffix = f' / {total / 1024**2:.1f} MB' if total else ' MB'
+            self.transfer_status.setText(f'Downloaded {done / 1024**2:.1f}{suffix}' +
+                                         (' · Verifying and preparing…' if total and done == total else ''))
+            self.download.setText('Downloading…')
+        else:
+            self.download.setText('Download update')
+            self.transfer_status.setText(self.downloads.error)
 
     def open_release(self):
         release = self.service.state.get('release')
         QDesktopServices.openUrl(QUrl(release['html_url'] if release else RELEASES_URL))
 
     def open_download(self):
+        if self.downloads.worker:
+            return
+        if self.downloads.result:
+            self.install_download()
+            return
         release = self.service.state.get('release')
         asset = select_download(release) if release else None
         if asset:
-            QDesktopServices.openUrl(QUrl(asset['browser_download_url']))
+            self.downloads.start(release)
+
+    def install_download(self):
+        result = self.downloads.result
+        studio = self.parentWidget()
+        if studio and ((hasattr(studio, 'is_active') and studio.is_active()) or
+                       (hasattr(studio, 'has_running_jobs') and studio.has_running_jobs())):
+            QMessageBox.information(self, 'Finish your current task',
+                                    'Finish recording or generation before installing this update.')
+            return
+        if not result.get('staged'):
+            path = Path(result['path'])
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+                QMessageBox.information(self, 'Downloaded update', f'Open the installer from:\n{path}')
+            return
+        answer = QMessageBox.question(self, 'Install update',
+            'Quit the watcher from its tray menu first. Studio will close, replace its app files and restart. '
+            'Your previous app will be kept as a backup. Install now?', QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            launch_windows_install(result['staged'], result['target'], Path(result['path']).parent)
+        except Exception as error:
+            QMessageBox.warning(self, 'Could not start installation', str(error))
+            return
+        studio.close()
 
 
 class UpdatePanel(QFrame):
@@ -96,6 +179,7 @@ class UpdatePanel(QFrame):
         super().__init__(parent)
         role(self, 'panel')
         self.service = UpdateService(self)
+        self.downloads = DownloadService(self.service.path.parent / 'updates', self)
         self.dialog = None
         self.check_button = QPushButton('Check for updates', parent)
         self.check_button.setToolTip(f'Lecture Studio {VERSION}')
@@ -122,7 +206,7 @@ class UpdatePanel(QFrame):
 
     def show_details(self):
         if self.dialog is None:
-            self.dialog = UpdateDialog(self.service, self.window())
+            self.dialog = UpdateDialog(self.service, self.downloads, self.window())
         self.dialog.refresh()
         self.dialog.show()
         self.dialog.raise_()
@@ -130,4 +214,5 @@ class UpdatePanel(QFrame):
 
     def check_manually(self):
         self.show_details()
-        self.service.check(manual=True)
+        if not self.downloads.worker:
+            self.service.check(manual=True)

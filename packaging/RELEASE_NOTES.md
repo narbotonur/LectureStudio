@@ -1,12 +1,14 @@
-# Lecture Studio 0.2.0
+# Lecture Studio 0.3.0
 
-- Check for updates from the Studio sidebar.
-- Read the new version's changes inside Studio before downloading.
-- The watcher checks at startup and then once per day, and shows an update notification.
-- An already open Studio receives the watcher's result without opening a second window.
-- macOS downloads are matched to Apple Silicon or Intel; Windows downloads are also supported.
-- Update checks run in the background. Recordings and your saved profile stay in place.
+- Download the matching Mac or Windows update directly inside Studio.
+- Follow download progress, cancel, and retry without interrupting a lecture.
+- Downloads are checked against SHA-256 before they become ready to install.
+- On Mac, open the downloaded DMG to replace Lecture Studio in Applications.
+- On packaged Windows installs, choose Install and restart to replace the app after it closes.
+- Windows keeps the previous app as a backup and attempts rollback if replacement or launch fails.
+- Installation waits until recording and generation have finished. Your profile stays in place.
+- Check for updates, daily watcher checks, and in-app release notes remain available.
 
-Finish any recording and quit Studio and its watcher before replacing the application.
-On macOS, open the DMG and replace Lecture Studio in Applications.
-These Mac builds are not notarized; native audio and account flows still require validation on a real Mac.
+Quit the watcher (and the prayer widget, if running) before installing.
+Source installations can download installers or update their Git checkout manually.
+Mac builds are not notarized; native recording and installation still require testing on a real Mac.

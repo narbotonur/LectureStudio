@@ -4,6 +4,7 @@ from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs, collect_d
 
 root = Path(SPECPATH).parent
 datas = [(str(root / 'annie/gui/assets/portals'), 'annie/gui/assets/portals')]
+datas += [(str(root / 'annie/update_install.ps1'), 'annie')]
 datas += collect_data_files('tzdata')
 binaries = []
 hidden = ['soundcard', 'win32crypt', 'win32timezone', 'pycaw.pycaw', 'comtypes.client',

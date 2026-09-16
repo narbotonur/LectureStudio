@@ -1506,10 +1506,12 @@ class MeetingWindow(QDialog):
     def has_running_jobs(self):
         return (any(job.isRunning() for job in self._jobs) or
                 self.updates_panel.service.is_running() or
+                self.updates_panel.downloads.is_running() or
                 self.timetable_view.has_running_job() or self.study_page.has_running_job())
 
     def stop_jobs(self):
         self.updates_panel.service.stop()
+        self.updates_panel.downloads.cancel()
         if self.updates_panel.dialog is not None:
             self.updates_panel.dialog.close()
         self.study_page.stop_background()

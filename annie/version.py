@@ -1,3 +1,3 @@
 """Single version used by the application, bundles and release workflow."""
-VERSION = '0.2.0'
+VERSION = '0.3.0'
 REPOSITORY = 'narbotonur/LectureStudio'

@@ -35,6 +35,8 @@ Native recording and packaging still require testing on a real Mac.
 ## Modes
 
 **Check for updates** in the sidebar shows the latest release and its changes.
+Download and verify the matching installer in Studio, then open the Mac DMG or
+choose **Install and restart** in a packaged Windows installation.
 The watcher checks at startup and then once per day, and announces available updates.
 See [publishing and installing updates](packaging/UPDATES.md).
 
