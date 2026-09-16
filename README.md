@@ -14,6 +14,11 @@ remaining work, and a credit-weighted semester GPA using the NU undergraduate
 common grading scale. These figures are planning estimates; official grades come
 from instructors and the Registrar.
 
+The **Habits** workspace supports Done, Minutes, and Count goals on selected days.
+Today and week percentages count only scheduled opportunities up to the current
+day; future days do not lower progress. A preferred time is stored for the planned
+weekly scheduling feature. Habit history remains local on this laptop.
+
 ## Run on Windows
 
 Install 64-bit Python (the Windows dependency set was tested with Python 3.14).
