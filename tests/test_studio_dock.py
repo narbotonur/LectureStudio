@@ -33,7 +33,8 @@ class DockBehaviorTests(unittest.TestCase):
             self.assertFalse(self.dock._compact)
             QTest.qWait(1250)
         self.assertTrue(self.dock._compact)
-        self.assertEqual(self.dock.size().width(), 68)
+        # Cocoa can round the animated logical width by one physical pixel.
+        self.assertAlmostEqual(self.dock.size().width(), 68, delta=1)
         self.assertFalse(self.dock.links_panel.isVisible())
         self.assertFalse(self.dock.restore_button.isVisible())
         self.dock.enterEvent(QEvent(QEvent.Enter))

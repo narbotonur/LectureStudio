@@ -55,12 +55,17 @@ def main():
                  'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8'},
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         output = queue.Queue()
+        reader_done = threading.Event()
 
         def read():
-            for line in process.stdout:
-                output.put(line)
-            output.put(None)
-        threading.Thread(target=read, daemon=True).start()
+            try:
+                for line in process.stdout:
+                    output.put(line)
+                output.put(None)
+            finally:
+                reader_done.set()
+        reader = threading.Thread(target=read, name='packaged-worker-output', daemon=True)
+        reader.start()
         try:
             command = {'action': 'start', 'session_id': 'release-test', 'mode': 'file',
                        'model_name': str(model), 'file_path': str(audio)}
@@ -92,16 +97,27 @@ def main():
                 raise RuntimeError('No transcript was produced for the generated speech fixture.')
             process.stdin.write('{"action":"shutdown"}\n')
             process.stdin.flush()
-            process.wait(timeout=15)
+            # Closing the command pipe guarantees EOF even if a packaged runtime
+            # misses the explicit shutdown message during interpreter teardown.
+            process.stdin.close()
+            process.wait(timeout=30)
             if process.returncode:
                 raise RuntimeError('Worker shutdown was not clean.')
+            if not reader_done.wait(5):
+                raise RuntimeError('Worker output reader did not finish after shutdown.')
             print('PASS: frozen backend loaded a real cached model, processed synthetic audio and shut down cleanly.')
         finally:
             if process.poll() is None:
                 process.terminate()
-                process.wait(timeout=10)
-            process.stdin.close()
-            process.stdout.close()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            if process.stdin and not process.stdin.closed:
+                process.stdin.close()
+            reader_done.wait(5)
+            reader.join(timeout=1)
 
 
 if __name__ == '__main__':
