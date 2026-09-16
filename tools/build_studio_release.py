@@ -12,11 +12,11 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = ('__init__', 'paths', 'platform_support', 'macos_support', 'macos_audio', 'secure_storage', 'startup', 'config', 'workstation_main',
-           'studio_router', 'meeting_prompt', 'calendar_service', 'moodle_calendar', 'deadlines', 'study_sessions', 'study_guide', 'updates', 'update_download', 'version',
+           'studio_router', 'meeting_prompt', 'calendar_service', 'moodle_calendar', 'deadlines', 'gpa_tracker', 'study_sessions', 'study_guide', 'updates', 'update_download', 'version',
            'meeting', 'dsp', 'audio_io', 'recording_audio', 'whisper_service', 'whisper_worker',
            'whisper_runtime', 'whisper_models', 'whisper_events', 'release_check',
            'prayer_times', 'prayer_startup', 'prayer_widget_main', 'desktop_pin')
-GUI = ('__init__', 'design', 'meeting_window', 'studio_dock', 'week_calendar', 'study_timer', 'studio_setup', 'moodle_setup', 'deadline_inbox', 'studio_updates', 'prayer_widget', 'prayer_card')
+GUI = ('__init__', 'design', 'meeting_window', 'studio_dock', 'week_calendar', 'study_timer', 'gpa_tracker', 'studio_setup', 'moodle_setup', 'deadline_inbox', 'studio_updates', 'prayer_widget', 'prayer_card')
 DENIED = ('token.json', 'credentials.json', 'annie_settings.json', 'study_sessions.sqlite3',
           'accounts.dpapi', 'calendar.dpapi', 'google-client.dpapi', 'moodle-calendar.dpapi', 'lecture_schedule_cache.json',
           'deadlines.json', 'prayer-widget.json', 'prayer-times-cache.json')

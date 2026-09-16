@@ -8,6 +8,12 @@ manage your schedule and Google Calendar, and track timed study sessions.
 Meeting/lecture reminders and the floating dock remain available. The prayer
 widget is optional and runs separately.
 
+The **GPA** workspace keeps a local list of courses, credits, assessment weights
+and posted scores. It estimates the current letter grade, the average needed on
+remaining work, and a credit-weighted semester GPA using the NU undergraduate
+common grading scale. These figures are planning estimates; official grades come
+from instructors and the Registrar.
+
 ## Run on Windows
 
 Install 64-bit Python (the Windows dependency set was tested with Python 3.14).

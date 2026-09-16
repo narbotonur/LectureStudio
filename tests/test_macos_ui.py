@@ -28,8 +28,8 @@ class MacStudioTests(unittest.TestCase):
             window.setAttribute(Qt.WA_DontShowOnScreen)
             window.show()
             try:
-                self.assertEqual(window.stack.count(), 6)
-                for index in range(6):
+                self.assertEqual(window.stack.count(), 7)
+                for index in range(7):
                     window._switch_tab(index)
                     self.app.processEvents()
                     self.assertEqual(window.stack.currentIndex(), index)

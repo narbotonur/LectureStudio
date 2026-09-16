@@ -69,7 +69,7 @@ QPushButton#recordButton[state="busy"] {{ background: #30372D; color: {MUTED}; }
 QPushButton[role="warmAction"] {{ color: #E7C28F; border-color: #5E5038; background: #262219; }}
 QPushButton[role="warmAction"]:hover {{ background: #332B1E; border-color: #806D4C; color: #F3D3A6; }}
 QPushButton:disabled {{ color: #818B79; background: #252B21; border-color: {BORDER}; }}
-QLineEdit, QComboBox, QTimeEdit, QDateEdit {{ background: {SURFACE}; color: {TEXT};
+QLineEdit, QComboBox, QTimeEdit, QDateEdit, QDoubleSpinBox {{ background: {SURFACE}; color: {TEXT};
     border: 1px solid {BORDER}; border-radius: 8px; padding: 9px; selection-background-color: #455C33; }}
 QLineEdit:focus, QComboBox:focus, QTextEdit:focus {{ border: 1px solid {ACCENT}; }}
 QLineEdit#courseContextInput {{ background: #1A1E18; border-color: #30372D; }}

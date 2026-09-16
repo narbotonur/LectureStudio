@@ -700,7 +700,7 @@ class MeetingWindow(QDialog):
         for index, (attr, title) in enumerate((("tab_notes_btn", "Notes"),
                 ("tab_transcript_btn", "Transcript"), ("tab_flashcards_btn", "Flashcards"),
                 ("tab_chat_btn", "Assistant"), ("tab_schedule_btn", "Schedule"),
-                ("tab_study_btn", "Study"))):
+                ("tab_study_btn", "Study"), ("tab_gpa_btn", "GPA"))):
             button = self._create_tab_btn(title, index == 0)
             button.clicked.connect(lambda checked=False, i=index: self._switch_tab(i))
             setattr(self, attr, button)
@@ -763,6 +763,10 @@ class MeetingWindow(QDialog):
         self.study_page.sessions_changed.connect(self.timetable_view.reload_local_sessions)
         self.study_page.timer_changed.connect(self._update_study_status)
         self.study_page._tick()
+
+        from annie.gui.gpa_tracker import GpaTrackerPage
+        self.gpa_page = GpaTrackerPage(self)
+        self.stack.addWidget(self.gpa_page)
 
         self.workspace_body = QBoxLayout(QBoxLayout.LeftToRight)
         self.workspace_body.setSpacing(12)
@@ -836,7 +840,7 @@ class MeetingWindow(QDialog):
         role(self.fuse_btn, "primary")
         apply_theme(self)
         self._shortcuts = []
-        for index in range(6):
+        for index in range(7):
             self._shortcuts.append(QShortcut(f"Ctrl+{index + 1}", self,
                 activated=lambda i=index: self._switch_tab(i)))
         self._shortcuts.append(QShortcut("Ctrl+Return", self, activated=self._fuse_notes))
@@ -901,8 +905,9 @@ class MeetingWindow(QDialog):
         self._style_tab_btn(self.tab_chat_btn, index == 3)
         self._style_tab_btn(self.tab_schedule_btn, index == 4)
         self._style_tab_btn(self.tab_study_btn, index == 5)
-        self.recording_panel.setVisible(index != 5)
-        self.bottom_panel.setVisible(index != 5)
+        self._style_tab_btn(self.tab_gpa_btn, index == 6)
+        self.recording_panel.setVisible(index not in (5, 6))
+        self.bottom_panel.setVisible(index not in (5, 6))
         self.gen_anki_btn.setVisible(index in (0, 1, 2))
         self.export_btn.setVisible(index in (0, 1, 2))
         if index == 4:
