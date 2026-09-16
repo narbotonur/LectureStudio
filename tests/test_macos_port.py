@@ -286,6 +286,11 @@ class BundleTests(unittest.TestCase):
                 self.assertIn(name, names)
             self.assertNotIn('annie_settings.json', names)
 
+    def test_intel_mac_uses_portable_cryptography_wheel(self):
+        root = Path(__file__).resolve().parents[1]
+        requirements = (root / 'packaging/requirements-macos.txt').read_text(encoding='utf-8')
+        self.assertIn("cryptography==46.0.7; sys_platform == 'darwin'", requirements)
+
 
 if __name__ == '__main__':
     unittest.main()
