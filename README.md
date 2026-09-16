@@ -1,34 +1,81 @@
 # Lecture Studio
 
-Standalone university workspace. No voice assistant, wake-word listener or
-assistant camera service is included or required.
+Local-first desktop workspace for turning lectures into an organized study system.
 
-Record and transcribe lectures, analyze slides, prepare study guides from files,
-manage your schedule and Google Calendar, and track timed study sessions.
-Meeting/lecture reminders and the floating dock remain available. The prayer
-widget is optional and runs separately.
+Lecture Studio records and transcribes classes, turns raw material into notes and
+flashcards, and keeps planning, grades, habits, deadlines, and focused study time
+in one calm desktop app. It is a standalone project: the old voice assistant is
+not required or started.
 
-The **GPA** workspace keeps a local list of courses, credits, assessment weights
-and posted scores. It estimates the current letter grade, the average needed on
-remaining work, and a credit-weighted semester GPA using the NU undergraduate
-common grading scale. These figures are planning estimates; official grades come
-from instructors and the Registrar.
+<p align="center">
+  <img src="docs/assets/lecture-studio-demo.gif" alt="Lecture Studio demo" width="920">
+</p>
 
-The **Habits** workspace supports Done, Minutes, and Count goals on selected days.
-Today and week percentages count only scheduled opportunities up to the current
-day; future days do not lower progress. A preferred time is stored for the planned
-weekly scheduling feature. Habit history remains local on this laptop.
+## What it does
 
-The **Plan** workspace builds a reviewable Monday–Sunday plan. It treats Google
-Calendar events as fixed, protects prayer times from the prayer-widget settings
-and the configured Friday Jumuah window, places scheduled habits, then distributes
-the weekly study target using course credits, grade gaps and confirmed deadlines.
-Plans remain local and do not modify Google Calendar. Past weeks are read-only.
+- Records a microphone or supported phone audio source with a live level meter.
+- Transcribes locally with `faster-whisper`; AI note generation is optional.
+- Combines a transcript, personal highlights, and slide analysis into study notes.
+- Creates flashcards and exam-preparation guides from PDF, PPTX, DOCX, and images.
+- Shows a Google Calendar-style weekly schedule and tracks focused study sessions.
+- Tracks course components, target grades, credit-weighted GPA, and study habits.
+- Builds a review-first weekly plan around classes, prayer times, Jumuah, habits,
+  grade gaps, and confirmed deadlines.
+- Detects Teams, Zoom, and Google Meet sessions from a quiet background watcher.
+- Checks GitHub Releases and downloads verified Windows or macOS updates.
 
-## Run on Windows
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/studio-notes.png" alt="Recording and study notes"><br><sub>Recording and study notes</sub></td>
+    <td width="50%"><img src="docs/assets/weekly-planner.png" alt="Constraint-aware weekly planner"><br><sub>Constraint-aware weekly planner</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/gpa-tracker.png" alt="Course and GPA tracker"><br><sub>Course and GPA tracker</sub></td>
+    <td width="50%"><img src="docs/assets/habit-tracker.png" alt="Habit tracker"><br><sub>Habit tracker</sub></td>
+  </tr>
+</table>
 
-Install 64-bit Python (the Windows dependency set was tested with Python 3.14).
-In this directory:
+All screenshots are generated from a fictional, temporary profile by
+[`tools/capture_portfolio.py`](tools/capture_portfolio.py). No personal calendar,
+recording, account, or university data is used.
+
+## Privacy by design
+
+Personal data lives outside the repository:
+
+- Windows: `%LOCALAPPDATA%\Annie\LectureStudio`
+- macOS: `~/Library/Application Support/Annie/LectureStudio`
+- Development override: `ANNIE_DATA_DIR=/absolute/path/outside/the/repository`
+
+Recordings, databases, generated notes, model weights, private Moodle calendar
+URLs, API keys, and Google OAuth credentials are ignored by Git and excluded from
+release staging. Credentials are protected with Windows DPAPI or macOS Keychain.
+Google Calendar, Moodle preview, prayer-time lookup, and optional AI features are
+the only network-facing integrations; the core trackers work locally.
+
+Run the repository audit before publishing:
+
+```powershell
+python tools/audit_public_repo.py
+```
+
+## Install
+
+The simplest installation is a matching package from
+[GitHub Releases](https://github.com/narbotonur/LectureStudio/releases).
+
+- Windows: download `LectureStudio-Windows-*.zip`, extract it, and run the app.
+- Apple Silicon Mac: download the `arm64` DMG.
+- Intel Mac: download the `x86_64` DMG.
+
+macOS builds are currently unsigned and not notarized. Review the release notes
+and follow [`packaging/MACOS.md`](packaging/MACOS.md) for Gatekeeper, microphone,
+screen-capture, and Keychain permissions. Each user connects their own Google
+account and supplies their own credentials; credentials must never be shared.
+
+### Run from source
+
+Windows (Python 3.14):
 
 ```powershell
 python -m venv .venv
@@ -36,107 +83,75 @@ python -m venv .venv
 .\run_studio.bat
 ```
 
-After setup, double-click `run_studio.bat`. The launcher prefers this repository's
-virtual environment and never falls back to the old ANNIE directory.
+macOS (Python 3.12):
 
-For development with an existing compatible Python installation, run
-`python lecture_studio_entry.py`. This does not launch the voice assistant.
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r packaging/requirements-macos.txt
+python tools/build_macos_audio.py
+python lecture_studio_entry.py
+```
 
-## Run on macOS
-
-Use Python 3.12 and follow [the macOS setup and permissions guide](packaging/MACOS.md).
-Install `packaging/requirements-macos.txt`, compile the native audio helper using
-`python tools/build_macos_audio.py`, then run `python lecture_studio_entry.py`.
-Native recording and packaging still require testing on a real Mac.
-
-## Modes
-
-**Check for updates** in the sidebar shows the latest release and its changes.
-Download and verify the matching installer in Studio, then open the Mac DMG or
-choose **Install and restart** in a packaged Windows installation.
-The watcher checks at startup and then once per day, and announces available updates.
-See [publishing and installing updates](packaging/UPDATES.md).
+Useful modes:
 
 ```text
 python lecture_studio_entry.py                 Open Studio
-python lecture_studio_entry.py --watch         Silent meeting/lecture reminders
-python lecture_studio_entry.py --prayer-widget Optional prayer widget
+python lecture_studio_entry.py --watch         Quiet meeting and lecture watcher
+python lecture_studio_entry.py --prayer-widget Optional desktop prayer widget
 python lecture_studio_entry.py --self-test     Isolated offline diagnostics
 ```
 
-Watching meetings does not itself start a recording. Set up your own accounts in
-Studio; enable login startup only after setup. Before switching startup from an
-older installation, stop its watcher via its tray menu and disable startup there.
-Do not run both installations' watchers together.
+## Architecture
 
-## Moodle calendar: connection preview
+```mermaid
+flowchart LR
+    E[Desktop entry points] --> R[Single-instance router]
+    R --> UI[PyQt5 workspace]
+    R --> W[Quiet watcher]
+    UI --> S[Recording and transcription]
+    UI --> P[Planning and study tools]
+    UI --> I[Optional integrations]
+    W --> R
+    S --> D[(Private local profile)]
+    P --> D
+    I --> D
+    I --> G[Google Calendar / Moodle / AI APIs]
+```
 
-Open **More → Moodle calendar…**. Sign in to Moodle in your browser, then open
-**Calendar → Export calendar**, select **All events** and **Recent and next 60 days**,
-and choose **Get calendar URL**. Paste that private URL into Studio and click
-**Check & connect**. Studio previews event names and saves a verified link using
-Windows encryption or macOS Keychain. It does not need your Moodle password.
+The application separates UI pages, domain services, OS integrations, and
+private profile storage. The watcher routes a detected meeting to the existing
+Studio process instead of opening a duplicate window. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for module boundaries, data flow,
+security decisions, and platform-specific code.
 
-This first step is manual: reopening the dialog shows the last successful preview;
-**Refresh / connect new URL** checks it again. An empty calendar can be valid—check
-the export date range and filters. A login page is reported as an error, not an
-empty calendar. Automatic deadline reminders and schedule integration are not yet
-enabled. The preview includes all exported event types, not just assignment deadlines.
-If your university disables calendar exports, this connection method is unavailable.
-Do not share the private URL. **Disconnect** removes the saved connection from this
-laptop without modifying Moodle events.
+## Development and releases
 
-## Syllabus and assignment deadlines
-
-Open **More → Deadline Inbox…** to choose a syllabus file or paste the visible text
-from a Moodle Assignment or Quiz page after signing in through your normal browser.
-Studio extracts candidate deadlines and shows the title, date, certainty and exact
-source quote. Review or edit the values and select which entries to save. Confirmed
-items are stored locally in `deadlines.json`; they are not yet added to Google
-Calendar or used for automatic reminders. AI analysis uses the account and privacy
-settings configured in Studio.
-
-## Private data and moving from ANNIE
-
-Code and personal data are separate. The marker `lecture-studio.standalone`
-enables the private profile even when running Windows source code:
-
-- Windows: `%LOCALAPPDATA%\Annie\LectureStudio`
-- macOS: `~/Library/Application Support/Annie/LectureStudio`
-- Override for development: `ANNIE_DATA_DIR` (an absolute directory outside Git).
-
-The existing `annie` Python package and profile names are retained for compatibility;
-they do not mean the voice assistant is running. Installed Studio releases may
-already use this same profile. Original ANNIE workspace data is not auto-imported.
-
-Exporting this repository copies no accounts, recordings, model weights or personal
-settings. Nothing in the original installation is removed. Reconnect Google and
-enter your API key through setup for a fresh profile. Do not copy credentials into
-this repository, publish personal files, or share an authenticated profile with a
-friend. Encrypted credentials are user/device-bound and should not be moved to a
-friend's computer. Local library migration should be performed with both Studios
-closed, backed up, and with a clearly chosen destination profile.
-
-## Develop and build
-
-```text
+```powershell
 python tools/check_studio.py
+python tools/capture_portfolio.py
 python tools/build_studio_release.py --stage-only
 python tools/build_studio_release.py
 python tools/build_studio_macos.py --source-only
 ```
 
-Windows executables build on Windows; native Mac bundles build on macOS. See
-[build instructions](packaging/BUILDING.md). Source archives are not installers.
-The Mac workflow is manually triggered, not automatically run on push.
+Windows packages are built on Windows. Native macOS bundles and DMGs are built on
+macOS through the manual GitHub Actions workflow. Both builders create SHA-256
+files used by the in-app updater. Publishing steps are documented in
+[`packaging/UPDATES.md`](packaging/UPDATES.md).
 
-This is a new local Git repository with no commit history or remote configured.
-Review `git status` and `git diff --cached` before committing or publishing.
+The test suite always uses a temporary profile. Do not point tests or demo tools
+at an authenticated profile. Before opening a pull request, run the full check and
+the public-repository audit.
 
-The test runner uses a temporary profile; do not run the test suite against your
-authenticated profile. The explicit migration utility is
-`python tools/migrate_studio_profile.py OLD_PROFILE EMPTY_PRIVATE_PROFILE`.
-It refuses nonempty targets and running source apps, preserves originals, uses
-SQLite backup for history, and encrypts credentials for the current OS user.
-It copies recordings, local Whisper cache, and recognized study-library folders.
-It does not change startup entries or shortcuts. Review disk space first.
+## Portfolio demo
+
+[`docs/DEMO.md`](docs/DEMO.md) contains a 60-90 second walkthrough, recording
+checklist, and a concise project description suitable for a portfolio page.
+
+## Status
+
+Lecture Studio is an actively developed student project. The Windows path is the
+most exercised; macOS packaging is tested in CI, while microphone permissions and
+hardware behavior still need validation on real Macs. Planning and GPA values are
+estimates, not official academic records.

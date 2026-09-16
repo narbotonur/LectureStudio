@@ -1,14 +1,33 @@
-# Lecture Studio 0.3.0
+# Lecture Studio 0.4.0
 
-- Download the matching Mac or Windows update directly inside Studio.
-- Follow download progress, cancel, and retry without interrupting a lecture.
-- Downloads are checked against SHA-256 before they become ready to install.
-- On Mac, open the downloaded DMG to replace Lecture Studio in Applications.
-- On packaged Windows installs, choose Install and restart to replace the app after it closes.
-- Windows keeps the previous app as a backup and attempts rollback if replacement or launch fails.
-- Installation waits until recording and generation have finished. Your profile stays in place.
-- Check for updates, daily watcher checks, and in-app release notes remain available.
+This release expands Lecture Studio from lecture capture into a complete,
+local-first study workspace.
 
-Quit the watcher (and the prayer widget, if running) before installing.
-Source installations can download installers or update their Git checkout manually.
-Mac builds are not notarized; native recording and installation still require testing on a real Mac.
+## New
+
+- Track courses, assessment weights, target grades, and estimated semester GPA.
+- Build habits with Done, Minutes, or Count goals and a weekly progress view.
+- Generate a reviewable weekly plan around calendar events, prayer times, Jumuah,
+  habits, credits, grade gaps, and confirmed deadlines.
+- Import a syllabus or paste an assignment page into the review-first Deadline
+  Inbox before anything is stored.
+- Preview a private Moodle calendar export without giving Studio your password.
+
+## Improved
+
+- Meeting detection routes Start to the already-running Studio instead of opening
+  a duplicate window.
+- The study timer counts active time only and can sync completed sessions to Google
+  Calendar when enabled.
+- The schedule uses denser calendar blocks and faster scrolling.
+- macOS and Windows update downloads are verified with SHA-256 before installation.
+- Public documentation now includes reproducible demo media, an architecture map,
+  privacy guidance, and a repository audit.
+
+## Before installing
+
+Quit the watcher and prayer widget, then close Lecture Studio. Your profile remains
+separate from the application and is preserved during replacement.
+
+macOS builds are not notarized yet. Choose the DMG matching Apple Silicon (`arm64`)
+or Intel (`x86_64`) and follow the macOS permissions guide.
