@@ -30,6 +30,10 @@ class DistributionTests(unittest.TestCase):
             self.assertFalse(names.intersection(DENIED))
             self.assertNotIn('recordings', {p.name for p in root.iterdir()})
             self.assertTrue((root / 'annie/gui/studio_setup.py').is_file())
+            self.assertTrue((root / 'annie/gui/moodle_setup.py').is_file())
+            self.assertTrue((root / 'annie/moodle_calendar.py').is_file())
+            self.assertTrue((root / 'annie/gui/deadline_inbox.py').is_file())
+            self.assertTrue((root / 'annie/deadlines.py').is_file())
             self.assertFalse((root / 'annie/skills').exists())
 
     def test_build_refuses_embedded_keys_and_personal_defaults(self):

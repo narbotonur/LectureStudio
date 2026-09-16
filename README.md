@@ -52,6 +52,33 @@ Studio; enable login startup only after setup. Before switching startup from an
 older installation, stop its watcher via its tray menu and disable startup there.
 Do not run both installations' watchers together.
 
+## Moodle calendar: connection preview
+
+Open **More → Moodle calendar…**. Sign in to Moodle in your browser, then open
+**Calendar → Export calendar**, select **All events** and **Recent and next 60 days**,
+and choose **Get calendar URL**. Paste that private URL into Studio and click
+**Check & connect**. Studio previews event names and saves a verified link using
+Windows encryption or macOS Keychain. It does not need your Moodle password.
+
+This first step is manual: reopening the dialog shows the last successful preview;
+**Refresh / connect new URL** checks it again. An empty calendar can be valid—check
+the export date range and filters. A login page is reported as an error, not an
+empty calendar. Automatic deadline reminders and schedule integration are not yet
+enabled. The preview includes all exported event types, not just assignment deadlines.
+If your university disables calendar exports, this connection method is unavailable.
+Do not share the private URL. **Disconnect** removes the saved connection from this
+laptop without modifying Moodle events.
+
+## Syllabus and assignment deadlines
+
+Open **More → Deadline Inbox…** to choose a syllabus file or paste the visible text
+from a Moodle Assignment or Quiz page after signing in through your normal browser.
+Studio extracts candidate deadlines and shows the title, date, certainty and exact
+source quote. Review or edit the values and select which entries to save. Confirmed
+items are stored locally in `deadlines.json`; they are not yet added to Google
+Calendar or used for automatic reminders. AI analysis uses the account and privacy
+settings configured in Studio.
+
 ## Private data and moving from ANNIE
 
 Code and personal data are separate. The marker `lecture-studio.standalone`

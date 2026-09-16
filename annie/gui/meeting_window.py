@@ -715,6 +715,8 @@ class MeetingWindow(QDialog):
         menu.addAction("Open saved recordings", lambda: self._open_profile_folder('recordings'))
         menu.addAction("Open study materials", lambda: self._open_profile_folder('library'))
         menu.addAction("Accounts & Setup…", self._open_studio_setup)
+        menu.addAction("Moodle calendar…", self._open_moodle_setup)
+        menu.addAction("Deadline Inbox…", self._open_deadline_inbox)
         menu.addSeparator()
         menu.addAction("Import audio…", self._import_audio)
         menu.addAction("Import slide…", self._import_slide)
@@ -909,6 +911,14 @@ class MeetingWindow(QDialog):
     def _update_study_status(self, text):
         self.study_status_btn.setText(text)
         self.study_status_btn.setVisible(bool(text))
+
+    def _open_moodle_setup(self):
+        from annie.gui.moodle_setup import MoodleSetup
+        MoodleSetup(self).exec_()
+
+    def _open_deadline_inbox(self):
+        from annie.gui.deadline_inbox import DeadlineInbox
+        DeadlineInbox(self).exec_()
 
     def _open_studio_setup(self):
         if self._recording or self.has_running_jobs():
