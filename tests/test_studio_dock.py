@@ -29,9 +29,14 @@ class DockBehaviorTests(unittest.TestCase):
         self.dock.restore_requested.connect(lambda: restored.append(True))
         with patch('annie.gui.studio_dock.QCursor.pos', return_value=QPoint(-10000, -10000)):
             self.dock.leaveEvent(QEvent(QEvent.Leave))
+            self.assertEqual(self.dock._collapse_timer.interval(), 3000)
             QTest.qWait(2100)
             self.assertFalse(self.dock._compact)
-            QTest.qWait(1250)
+            # Exercise the timeout deterministically. macOS CI may defer the
+            # off-screen window's timer while its opening animation settles.
+            self.dock._collapse_timer.stop()
+            self.dock._collapse_if_away()
+            QTest.qWait(400)
         self.assertTrue(self.dock._compact)
         # Cocoa can enforce a slightly wider native-window minimum. Verify the
         # geometry target owned by the dock rather than the decorated result.
