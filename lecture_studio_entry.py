@@ -22,7 +22,22 @@ def main():
         from annie.whisper_worker import clean_stray_scripts
         from annie.whisper_runtime import main as worker_main
         sys.argv = [sys.argv[0], '--service']
-        return worker_main(clean_stray_scripts)
+        result = worker_main(clean_stray_scripts)
+        if getattr(sys, 'frozen', False):
+            # Some native inference runtimes keep teardown threads alive on
+            # macOS after the service loop has shut down cleanly. This process
+            # owns no UI or unsaved state at this point, so end the isolated
+            # frozen worker without waiting on third-party interpreter teardown.
+            for name in ('stdout', 'stderr'):
+                stream = getattr(sys, name, None)
+                if stream is not None:
+                    try:
+                        stream.flush()
+                    except (OSError, ValueError):
+                        pass
+            code = int(result or 0)
+            os._exit(code)
+        return result
     if getattr(sys, 'frozen', False):
         from annie.paths import DATA_DIR
         # A windowed executable has no console streams. Keep them writable.

@@ -61,6 +61,16 @@ class SpoolTests(unittest.TestCase):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_frozen_worker_exits_after_clean_service_shutdown(self):
+        import lecture_studio_entry
+        with patch.object(sys, 'argv', ['LectureStudioWorker', '--whisper-service']), \
+             patch.object(sys, 'frozen', True, create=True), \
+             patch('annie.whisper_runtime.main', return_value=0) as worker, \
+             patch('lecture_studio_entry.os._exit') as hard_exit:
+            self.assertEqual(lecture_studio_entry.main(), 0)
+        worker.assert_called_once()
+        hard_exit.assert_called_once_with(0)
+
     def test_phone_pcm_resampler_converts_44100_hz_to_16000_hz(self):
         import numpy as np
 
