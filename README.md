@@ -19,6 +19,12 @@ Today and week percentages count only scheduled opportunities up to the current
 day; future days do not lower progress. A preferred time is stored for the planned
 weekly scheduling feature. Habit history remains local on this laptop.
 
+The **Plan** workspace builds a reviewable Monday–Sunday plan. It treats Google
+Calendar events as fixed, protects prayer times from the prayer-widget settings
+and the configured Friday Jumuah window, places scheduled habits, then distributes
+the weekly study target using course credits, grade gaps and confirmed deadlines.
+Plans remain local and do not modify Google Calendar. Past weeks are read-only.
+
 ## Run on Windows
 
 Install 64-bit Python (the Windows dependency set was tested with Python 3.14).

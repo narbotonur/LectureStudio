@@ -1,6 +1,6 @@
 import copy
 from contextlib import ExitStack
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -15,7 +15,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 
-from annie.prayer_times import (PrayerSettings, PrayerStore, DISPLAY_TIMES, fetch_schedule,
+from annie.prayer_times import (PrayerSettings, PrayerStore, DISPLAY_TIMES, fetch_date_range, fetch_schedule,
                                next_prayer, today_schedule, refresh_due)
 
 NOW = datetime(2026, 9, 12, 10, 0, tzinfo=timezone.utc)
@@ -43,6 +43,42 @@ def sample_data(settings=None):
 
 
 class PrayerCalculationTests(unittest.TestCase):
+    def test_week_range_uses_month_calendar_and_preserves_madhhab(self):
+        def month_get(url, params, timeout):
+            year, month = (int(value) for value in url.rstrip('/').split('/')[-2:])
+            first = date(year, month, 1)
+            next_month = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
+            rows = []
+            day = first
+            while day < next_month:
+                rows.append(response_for(day, params['school']).json.return_value['data'])
+                day += timedelta(days=1)
+            response = Mock()
+            response.json.return_value = {'code': 200, 'data': rows}
+            return response
+
+        get = Mock(side_effect=month_get)
+        settings = PrayerSettings(city='Astana', country='Kazakhstan', madhhab='hanafi')
+        result = fetch_date_range(settings, date(2026, 9, 30), date(2026, 10, 2), get=get)
+        self.assertEqual(set(result['days']), {date(2026, 9, 30), date(2026, 10, 1), date(2026, 10, 2)})
+        self.assertEqual(get.call_count, 2)
+        self.assertTrue(all(call.kwargs['params']['school'] == 1 for call in get.call_args_list))
+        self.assertIn('T16:35:00', result['days'][date(2026, 10, 1)]['Asr'])
+
+    def test_week_range_rejects_partial_response_and_honors_cancellation(self):
+        settings = PrayerSettings(city='Astana', country='Kazakhstan')
+        get = Mock()
+        with self.assertRaises(InterruptedError):
+            fetch_date_range(settings, date(2026, 9, 14), date(2026, 9, 20),
+                             get=get, cancelled=lambda: True)
+        get.assert_not_called()
+        response = Mock()
+        response.json.return_value = {
+            'code': 200, 'data': [response_for(date(2026, 9, 14)).json.return_value['data']]}
+        with self.assertRaisesRegex(ValueError, 'неполное'):
+            fetch_date_range(settings, date(2026, 9, 14), date(2026, 9, 20),
+                             get=Mock(return_value=response))
+
     def test_four_madhhabs_map_to_two_asr_conventions(self):
         self.assertEqual([PrayerSettings(madhhab=name).school for name in
                           ('hanafi', 'shafii', 'maliki', 'hanbali')], [1, 0, 0, 0])

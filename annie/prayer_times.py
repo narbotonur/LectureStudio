@@ -6,7 +6,7 @@ one-shadow Asr used here for Shafi'i, Maliki and Hanbali (excluding noon shadow)
 Source: https://aladhan.com/prayer-times-api and /v1/methods.
 """
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -188,6 +188,56 @@ def fetch_schedule(settings, old=None, now=None, get=None, cancelled=None):
     return {'signature': settings.signature, 'timezone': zone, 'fetched_at': now.isoformat(),
             'refresh_day': day.isoformat(), 'source': 'AlAdhan', 'method': settings.method,
             'city': settings.city, 'country': settings.country, 'days': [first, second]}
+
+
+def fetch_date_range(settings, start, end, get=None, cancelled=None):
+    """Fetch an inclusive range efficiently through monthly calendar responses."""
+    settings.validate()
+    if type(start) is not date or type(end) is not date or start > end or (end - start).days > 31:
+        raise ValueError('Prayer planning range must be between 1 and 32 days.')
+    get = get or requests.get
+    cancelled = cancelled or (lambda: False)
+    months = []
+    cursor = start.replace(day=1)
+    while cursor <= end:
+        months.append((cursor.year, cursor.month))
+        cursor = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
+    days, zone_name = {}, None
+    for year, month in months:
+        if cancelled():
+            raise InterruptedError('Обновление отменено.')
+        response = get(f'https://api.aladhan.com/v1/calendarByCity/{year}/{month}',
+                       params={'city': settings.city, 'country': settings.country,
+                               'method': settings.method, 'school': settings.school,
+                               'latitudeAdjustmentMethod': 3, 'iso8601': 'true'},
+                       timeout=(5, 15))
+        response.raise_for_status()
+        result = response.json()
+        if result.get('code') != 200 or not isinstance(result.get('data'), list):
+            raise ValueError('Источник не вернул календарь намазов для этого города.')
+        for raw in result['data']:
+            day = datetime.strptime(raw['date']['gregorian']['date'], '%d-%m-%Y').date()
+            if day < start or day > end:
+                continue
+            zone = ZoneInfo(raw['meta']['timezone'])
+            if zone_name is not None and zone.key != zone_name:
+                raise ValueError('Часовой пояс расписания изменился внутри недели.')
+            zone_name = zone.key
+            times = {}
+            for name in DISPLAY_TIMES:
+                value = datetime.fromisoformat(raw['timings'][name])
+                if value.utcoffset() is None:
+                    raise ValueError('Источник не указал часовой пояс времени намаза.')
+                times[name] = (value + timedelta(
+                    minutes=settings.adjustments.get(name, 0))).isoformat()
+            ordered = [datetime.fromisoformat(times[name]) for name in DISPLAY_TIMES]
+            if any(right <= left for left, right in zip(ordered, ordered[1:])):
+                raise ValueError('Времена намазов нарушают ожидаемый порядок.')
+            days[day] = times
+    expected = {start + timedelta(days=offset) for offset in range((end - start).days + 1)}
+    if set(days) != expected or not zone_name:
+        raise ValueError('Источник вернул неполное расписание намазов на неделю.')
+    return {'timezone': zone_name, 'days': days}
 
 
 def refresh_due(data, now=None):

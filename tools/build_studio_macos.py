@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 from tools.build_studio_release import stage, DENIED
 from tools.build_macos_audio import build_helper
 
-TESTS = ('test_audio_io.py', 'test_calendar_background.py', 'test_deadlines.py', 'test_gpa_tracker.py', 'test_habits.py',
+TESTS = ('test_audio_io.py', 'test_calendar_background.py', 'test_deadlines.py', 'test_gpa_tracker.py', 'test_habits.py', 'test_planner.py',
          'test_moodle_calendar.py', 'test_macos_audio.py',
          'test_macos_port.py', 'test_macos_ui.py', 'test_meeting_prompt.py',
          'test_slide_analysis.py', 'test_studio_dock.py', 'test_studio_router.py',

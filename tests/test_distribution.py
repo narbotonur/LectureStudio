@@ -38,6 +38,8 @@ class DistributionTests(unittest.TestCase):
             self.assertTrue((root / 'annie/gpa_tracker.py').is_file())
             self.assertTrue((root / 'annie/gui/habit_tracker.py').is_file())
             self.assertTrue((root / 'annie/habits.py').is_file())
+            self.assertTrue((root / 'annie/gui/weekly_planner.py').is_file())
+            self.assertTrue((root / 'annie/planner.py').is_file())
             self.assertFalse((root / 'annie/skills').exists())
 
     def test_build_refuses_embedded_keys_and_personal_defaults(self):

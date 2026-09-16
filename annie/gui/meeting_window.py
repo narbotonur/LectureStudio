@@ -701,7 +701,7 @@ class MeetingWindow(QDialog):
                 ("tab_transcript_btn", "Transcript"), ("tab_flashcards_btn", "Flashcards"),
                 ("tab_chat_btn", "Assistant"), ("tab_schedule_btn", "Schedule"),
                 ("tab_study_btn", "Study"), ("tab_gpa_btn", "GPA"),
-                ("tab_habits_btn", "Habits"))):
+                ("tab_habits_btn", "Habits"), ("tab_plan_btn", "Plan"))):
             button = self._create_tab_btn(title, index == 0)
             button.clicked.connect(lambda checked=False, i=index: self._switch_tab(i))
             setattr(self, attr, button)
@@ -772,6 +772,10 @@ class MeetingWindow(QDialog):
         from annie.gui.habit_tracker import HabitTrackerPage
         self.habits_page = HabitTrackerPage(self)
         self.stack.addWidget(self.habits_page)
+
+        from annie.gui.weekly_planner import WeeklyPlannerPage
+        self.planner_page = WeeklyPlannerPage(self)
+        self.stack.addWidget(self.planner_page)
 
         self.workspace_body = QBoxLayout(QBoxLayout.LeftToRight)
         self.workspace_body.setSpacing(12)
@@ -845,7 +849,7 @@ class MeetingWindow(QDialog):
         role(self.fuse_btn, "primary")
         apply_theme(self)
         self._shortcuts = []
-        for index in range(8):
+        for index in range(9):
             self._shortcuts.append(QShortcut(f"Ctrl+{index + 1}", self,
                 activated=lambda i=index: self._switch_tab(i)))
         self._shortcuts.append(QShortcut("Ctrl+Return", self, activated=self._fuse_notes))
@@ -853,7 +857,7 @@ class MeetingWindow(QDialog):
 
     def _create_tab_btn(self, text: str, active: bool = False) -> QPushButton:
         btn = QPushButton(text)
-        btn.setFixedHeight(40)
+        btn.setFixedHeight(36)
         btn.setMinimumWidth(0)
         btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         btn.setCursor(Qt.PointingHandCursor)
@@ -912,10 +916,13 @@ class MeetingWindow(QDialog):
         self._style_tab_btn(self.tab_study_btn, index == 5)
         self._style_tab_btn(self.tab_gpa_btn, index == 6)
         self._style_tab_btn(self.tab_habits_btn, index == 7)
-        self.recording_panel.setVisible(index not in (5, 6, 7))
-        self.bottom_panel.setVisible(index not in (5, 6, 7))
+        self._style_tab_btn(self.tab_plan_btn, index == 8)
+        self.recording_panel.setVisible(index not in (5, 6, 7, 8))
+        self.bottom_panel.setVisible(index not in (5, 6, 7, 8))
         if index == 7:
             self.habits_page.reload()
+        if index == 8:
+            self.planner_page.reload()
         self.gen_anki_btn.setVisible(index in (0, 1, 2))
         self.export_btn.setVisible(index in (0, 1, 2))
         if index == 4:
@@ -1530,7 +1537,8 @@ class MeetingWindow(QDialog):
         return (any(job.isRunning() for job in self._jobs) or
                 self.updates_panel.service.is_running() or
                 self.updates_panel.downloads.is_running() or
-                self.timetable_view.has_running_job() or self.study_page.has_running_job())
+                self.timetable_view.has_running_job() or self.study_page.has_running_job() or
+                self.planner_page.has_running_job())
 
     def stop_jobs(self):
         self.updates_panel.service.stop()
@@ -1538,6 +1546,7 @@ class MeetingWindow(QDialog):
         if self.updates_panel.dialog is not None:
             self.updates_panel.dialog.close()
         self.study_page.stop_background()
+        self.planner_page.stop_background()
         if self._mini_dock is not None:
             self._mini_dock.hide_immediately()
         for job in list(self._jobs):
