@@ -2,6 +2,7 @@
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -71,11 +72,14 @@ class MacStudioTests(unittest.TestCase):
         from annie import meeting_prompt
         controller = meeting_prompt.MeetingPromptController(self.app, Mock())
         beats = []
+        scan_started = threading.Event()
+        release_scan = threading.Event()
         timer = QTimer()
         timer.timeout.connect(lambda: beats.append(True))
 
         def slow_scan():
-            time.sleep(.15)
+            scan_started.set()
+            release_scan.wait(1)
             return meeting_prompt.ConferenceWindow('Zoom', 'Zoom Meeting', 'zoom.us', 1)
 
         with patch.object(meeting_prompt, 'detect_conference_window', side_effect=slow_scan), \
@@ -84,14 +88,19 @@ class MacStudioTests(unittest.TestCase):
                 controller._started = True
                 timer.start(10)
                 controller._check_conference()
-                QTest.qWait(40)
+                deadline = time.monotonic() + 1
+                while (not scan_started.is_set() or not beats) and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(.005)
                 self.assertTrue(beats)
                 self.assertTrue(controller.has_running_job())
                 controller.stop()
+                release_scan.set()
                 QTest.qWait(180)
                 self.assertFalse(controller.prompt.isVisible())
                 self.assertFalse(controller.has_running_job())
             finally:
+                release_scan.set()
                 timer.stop()
                 controller.stop()
                 if controller._conference_worker:

@@ -1,5 +1,6 @@
 from pathlib import Path
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -91,9 +92,16 @@ class LoadingTests(unittest.TestCase):
 
     def test_status_heartbeat_reports_real_phase_and_stops_at_completion(self):
         events = []
-        with preparation_status('large-v3-turbo', lambda kind, **data: events.append(data['text']), interval=.01) as report:
+        heartbeat = threading.Event()
+
+        def emitted(kind, **data):
+            events.append(data['text'])
+            if 'elapsed' in data['text']:
+                heartbeat.set()
+
+        with preparation_status('large-v3-turbo', emitted, interval=.01) as report:
             report('Using existing files')
-            time.sleep(.04)
+            self.assertTrue(heartbeat.wait(.5), 'Heartbeat thread did not report within timeout')
         count = len(events)
         time.sleep(.03)
         self.assertEqual(len(events), count)
