@@ -17,7 +17,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
-      ANNIE_DATA_DIR: ${{ runner.temp }}/annie-test-profile
+      ANNIE_DATA_DIR: ${{ github.workspace }}/.test-profile
       QT_QPA_PLATFORM: offscreen
       PYTHONUTF8: '1'
     steps:
