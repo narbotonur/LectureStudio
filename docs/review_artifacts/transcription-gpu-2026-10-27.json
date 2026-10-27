@@ -1,0 +1,28 @@
+{
+  "date_local": "2026-10-27",
+  "fixture": {
+    "origin": "Windows System.Speech local text-to-speech generated for this test",
+    "text": "This is a fictional lecture for testing. Your assignment is due on Friday at five P M. Review stack frames and saved registers before the next class.",
+    "audio_seconds": 12.69,
+    "contains_private_audio": false,
+    "wav_tracked": false
+  },
+  "measurement": {
+    "backend": "local",
+    "model": "small",
+    "language": "en",
+    "device": "GPU",
+    "elapsed_seconds_including_model_load": 3.991,
+    "inference_seconds": 1.5779945999383926,
+    "first_text_seconds_after_model_load": 1.5777000999078155,
+    "real_time_factor_excluding_model_load": 0.12434945625992062,
+    "segments": 3,
+    "cancelled": false
+  },
+  "fix": "Register existing NVIDIA runtime-wheel bin directories in the worker process; no installation or system PATH change",
+  "limits": [
+    "A synthetic English file, not a classroom microphone accuracy evaluation.",
+    "Different fixture from the initial CPU measurement; not a controlled speed comparison.",
+    "Live Meta API access is still unavailable because the key has not been issued."
+  ]
+}

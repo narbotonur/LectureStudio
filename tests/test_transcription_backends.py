@@ -10,10 +10,26 @@ import wave
 from annie.meta_voice import MetaVoiceBackend, VoiceTurns, VoiceUnavailable, transcribe_file
 from annie.recording_audio import DiskAudioSpool, UtteranceSegmenter
 from annie.transcription import TranscriptSegment
-from annie.whisper_runtime import DeferredLocalModel, record_session, transcribe_phrase
+from annie.whisper_runtime import DeferredLocalModel, prepare_windows_cuda, record_session, transcribe_phrase
 
 
 class TranscriptContractTests(unittest.TestCase):
+    def test_windows_cuda_wheels_are_discovered_without_installing_or_system_path_changes(self):
+        import os
+        with tempfile.TemporaryDirectory() as root:
+            binary = Path(root) / 'nvidia' / 'cublas' / 'bin'
+            binary.mkdir(parents=True)
+            with patch('annie.whisper_runtime.sys.platform', 'win32'), \
+                 patch('site.getusersitepackages', return_value=root), \
+                 patch('site.getsitepackages', return_value=[]), \
+                 patch.dict(os.environ, {'PATH': 'original-worker-path'}), \
+                 patch('os.add_dll_directory', create=True) as register:
+                prepare_windows_cuda()
+                register.assert_called_once_with(str(binary))
+                self.assertEqual(os.environ['PATH'].split(os.pathsep)[0], str(binary))
+                prepare_windows_cuda()
+                self.assertEqual(os.environ['PATH'].split(os.pathsep).count(str(binary)), 1)
+
     def test_cold_model_load_happens_after_audio_is_already_saved(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'lecture.wav'

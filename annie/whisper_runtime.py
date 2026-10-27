@@ -1,6 +1,7 @@
 """Whisper service runtime. Kept out of the Qt process."""
 import gc
 import json
+import os
 from pathlib import Path
 import queue
 import sys
@@ -18,6 +19,31 @@ from annie.recording_audio import DiskAudioSpool, UtteranceSegmenter
 from annie.transcription import emit_segment
 
 _output_lock = threading.Lock()
+_cuda_dll_handles = []
+
+
+def prepare_windows_cuda():
+    """Discover installed runtime wheels for this process, without system changes."""
+    if sys.platform != 'win32':
+        return
+    import site
+    roots = [Path(site.getusersitepackages())]
+    roots.extend(Path(value) for value in site.getsitepackages())
+    directories = []
+    for root in roots:
+        for package in ('cublas', 'cuda_nvrtc', 'cudnn', 'cuda_runtime'):
+            directory = root / 'nvidia' / package / 'bin'
+            if directory.is_dir() and directory not in directories:
+                directories.append(directory)
+    for directory in directories:
+        if hasattr(os, 'add_dll_directory'):
+            _cuda_dll_handles.append(os.add_dll_directory(str(directory)))
+    if directories:
+        # Native cuDNN loads additional DLLs lazily by name during inference.
+        # This is the worker's environment only, never the user's system PATH.
+        existing = os.environ.get('PATH', '').split(os.pathsep)
+        additions = [str(path) for path in directories if str(path) not in existing]
+        os.environ['PATH'] = os.pathsep.join(additions + existing)
 
 
 class StreamingPCM16Resampler:
@@ -87,6 +113,7 @@ def load_model(name, report=None):
     try:
         if ctranslate2.get_cuda_device_count() > 0:
             if sys.platform == 'win32':
+                prepare_windows_cuda()
                 # A GPU can be visible while the optional CUDA libraries are
                 # absent. CTranslate2 otherwise fails only on first inference.
                 import ctypes

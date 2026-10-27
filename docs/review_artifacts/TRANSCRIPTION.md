@@ -22,11 +22,19 @@ only. Real-file mode can load/download the requested Whisper model. Add
 `--backend meta_voice` only when you intend to send that file to Meta using an
 API key supplied through `META_API_KEY` or `MODEL_API_KEY`.
 
-On the tested Windows environment CUDA reported one GPU, but the three required
-CUDA/cuDNN DLLs were absent from the loader path; the application used CPU. This
-does not establish why every historical lecture was slow. The new language hint,
+The first run reported one GPU but could not find the three required CUDA/cuDNN
+DLLs on the loader path and used CPU. Follow-up inspection found existing NVIDIA
+runtime wheels in Python's user package directory. The worker now registers their
+`bin` directories in its own DLL search path and process environment. No runtime
+installation or system PATH change was needed. A second synthetic English WAV
+(12.690 seconds) successfully ran on GPU: 1.578 seconds of inference, 3.991 seconds
+including preparation, three segments, real-time factor 0.124. This uses a different
+fixture from the first run, so those timings are not a controlled CPU/GPU comparison.
+
+This does not establish why every historical lecture was slow. The new language hint,
 real-time factor, first-text latency, backend/device and backlog measurements
-make subsequent diagnosis observable. No CUDA libraries were installed.
+make subsequent diagnosis observable. No CUDA libraries were installed. A portable
+package can use existing runtime wheels on this PC; other PCs without them retain CPU.
 
 ## Provider contract
 
