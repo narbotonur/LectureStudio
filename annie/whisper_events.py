@@ -28,6 +28,15 @@ def consume_session(worker, **options):
                         text = text.strip() + ' '
                     worker.full_transcript.append(text)
                     worker.transcript_updated.emit(text)
+            elif kind == 'transcript_segment':
+                segment = data.get('segment', {})
+                if not hasattr(worker, 'transcript_segments'):
+                    worker.transcript_segments = []
+                worker.transcript_segments.append(segment)
+                if hasattr(worker, 'transcript_segment'):
+                    worker.transcript_segment.emit(segment)
+            elif kind == 'partial_transcript' and hasattr(worker, 'partial_transcript_updated'):
+                worker.partial_transcript_updated.emit(data.get('text', ''))
             elif kind == 'progress' and hasattr(worker, 'progress_changed'):
                 worker.progress_changed.emit(data.get('percent', 0))
             elif kind == 'recording_saved':
@@ -38,6 +47,8 @@ def consume_session(worker, **options):
             elif kind == 'metrics':
                 worker.last_metrics.update({k: v for k, v in data.items()
                                             if k not in ('type', 'session_id')})
+                if hasattr(worker, 'metrics_updated'):
+                    worker.metrics_updated.emit(dict(worker.last_metrics))
                 if 'backlog_seconds' in data and hasattr(worker, 'backlog_updated'):
                     worker.backlog_updated.emit(float(data['backlog_seconds']))
             elif kind == 'error':

@@ -15,6 +15,7 @@ import sounddevice as sd
 from annie import config as cfg
 from annie.dsp import AudioEnhancer
 from annie.recording_audio import DiskAudioSpool, UtteranceSegmenter
+from annie.transcription import emit_segment
 
 _output_lock = threading.Lock()
 
@@ -93,8 +94,9 @@ def load_model(name, report=None):
                     ctypes.WinDLL(library)
             report(f'Loading cached Whisper ({name}) into GPU memory; audio capture has not started')
             return WhisperModel(target, device='cuda', compute_type='float16', local_files_only=True), 'GPU'
-    except Exception:
-        report('GPU initialization unavailable; loading Whisper on CPU')
+    except Exception as exc:
+        detail = 'CUDA/cuDNN runtime libraries are unavailable' if isinstance(exc, OSError) else type(exc).__name__
+        report(f'GPU initialization unavailable ({detail}); loading Whisper on CPU')
     report(f'Loading cached Whisper ({name}) into CPU memory; audio capture has not started')
     return WhisperModel(target, device='cpu', compute_type='int8', cpu_threads=4,
                         local_files_only=True), 'CPU'
@@ -178,7 +180,8 @@ def capture_audio(device, stop, deliver):
         stop.wait()
 
 
-def transcribe_phrase(model, pcm, prompt, clean_text, emit):
+def transcribe_phrase(model, pcm, prompt, clean_text, emit, *, offset=0.0,
+                      source='recording', language=None):
     audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768
     peak = float(np.max(np.abs(audio)))
     if peak <= 0.005:
@@ -186,18 +189,27 @@ def transcribe_phrase(model, pcm, prompt, clean_text, emit):
     audio = np.clip(audio * min(8.0, 0.75 / peak), -1, 1)
     started = time.monotonic()
     segments, _ = model.transcribe(
-        audio, language=None, initial_prompt=prompt, vad_filter=True,
+        audio, language=language or None, initial_prompt=prompt, vad_filter=True,
         vad_parameters={'min_silence_duration_ms': 400, 'speech_pad_ms': 200},
         no_speech_threshold=0.6, log_prob_threshold=-1.0,
         compression_ratio_threshold=2.4, hallucination_silence_threshold=2.0,
         beam_size=1, condition_on_previous_text=False,
     )
-    phrases = [clean_text(segment.text.strip()) for segment in segments]
-    text = ' '.join(part for part in phrases if part)
+    duration = len(audio) / 16000
+    phrases = []
+    for segment in segments:
+        part = clean_text(segment.text.strip())
+        if part:
+            phrases.append(part)
+            start = min(duration, max(0.0, float(getattr(segment, 'start', 0))))
+            end = min(duration, max(start, float(getattr(segment, 'end', duration))))
+            emit_segment(emit, offset + start, offset + end, part, source)
+    text = ' '.join(phrases)
     if text:
         emit('transcript', text=text)
-    duration = len(audio) / 16000
-    emit('metrics', inference_seconds=time.monotonic() - started, audio_seconds=duration)
+    inference = time.monotonic() - started
+    emit('metrics', inference_seconds=inference, audio_seconds=duration,
+         real_time_factor=inference / max(duration, .001))
 
 
 def record_session(options, model, stop, emit, clean_text, capture=capture_audio):
@@ -272,8 +284,18 @@ def record_session(options, model, stop, emit, clean_text, capture=capture_audio
     emit('status', text='Recording lecture...')
     writer.start()
     recorder.start()
-    segmenter = UtteranceSegmenter()
-    try:
+    session_started = time.monotonic()
+    first_text = [False]
+    segment_emit = emit
+
+    def measured_emit(kind, **data):
+        if kind == 'transcript' and data.get('text') and not first_text[0]:
+            first_text[0] = True
+            emit('metrics', first_text_seconds=time.monotonic() - session_started)
+        segment_emit(kind, **data)
+
+    def local_loop(local_model, base=0.0):
+        segmenter = UtteranceSegmenter()
         while True:
             raw = spool.read()
             if raw is None:
@@ -283,11 +305,33 @@ def record_session(options, model, stop, emit, clean_text, capture=capture_audio
             rms = float(np.sqrt(np.mean(samples ** 2) + 1e-6))
             phrase = segmenter.push(pcm, rms > 12)
             if phrase:
-                transcribe_phrase(model, phrase, prompt, clean_text, emit)
+                transcribe_phrase(local_model, phrase, prompt, clean_text, measured_emit,
+                                  offset=base + segmenter.last_start_sample / 16000,
+                                  source=spool.path.name, language=options.get('language'))
                 emit('metrics', backlog_seconds=spool.backlog_seconds)
         tail = segmenter.flush()
         if tail:
-            transcribe_phrase(model, tail, prompt, clean_text, emit)
+            transcribe_phrase(local_model, tail, prompt, clean_text, measured_emit,
+                              offset=base + segmenter.last_start_sample / 16000,
+                              source=spool.path.name, language=options.get('language'))
+
+    try:
+        if getattr(model, 'name', '') == 'meta_voice':
+            try:
+                model.stream(spool, measured_emit, spool.path.name)
+            except Exception:
+                # The recorder and writer continue while a local model loads.
+                # Resume only after the last finalized cloud turn.
+                resume_at = model.committed_seconds
+                emit('warning', text='Muse Voice unavailable. Continuing with Local Whisper; recording is preserved.')
+                local_model, device = load_model(options.get('model_name', 'small'),
+                                                 report=lambda text: emit('status', text=text))
+                emit('metrics', backend='local', device=device)
+                spool.seek_reader(resume_at)
+                emit('partial_transcript', text='')
+                local_loop(local_model, resume_at)
+        else:
+            local_loop(model)
     finally:
         stop.set()
         recorder.join()
@@ -307,17 +351,30 @@ def record_session(options, model, stop, emit, clean_text, capture=capture_audio
 
 def file_session(options, model, stop, emit, clean_text):
     path = options['file_path']
+    if getattr(model, 'name', '') == 'meta_voice':
+        from annie.meta_voice import transcribe_file
+        return transcribe_file(path, model, stop, emit)
+    started = time.monotonic()
+    first_text = False
     segments, info = model.transcribe(path, beam_size=2, vad_filter=True,
-                                      initial_prompt=options.get('subject_context') or None)
+                                      initial_prompt=options.get('subject_context') or None,
+                                      language=options.get('language') or None)
     for segment in segments:
         if stop.is_set():
             break
         text = clean_text(segment.text.strip())
         if text:
+            if not first_text:
+                first_text = True
+                emit('metrics', first_text_seconds=time.monotonic() - started)
+            emit_segment(emit, segment.start, segment.end, text, Path(path).name)
             start = f'{int(segment.start // 60):02d}:{int(segment.start % 60):02d}'
             end = f'{int(segment.end // 60):02d}:{int(segment.end % 60):02d}'
             emit('transcript', text=f'[{start} → {end}] {text}\n')
         emit('progress', percent=min(100, int(segment.end / max(info.duration, 1) * 100)))
+    elapsed = time.monotonic() - started
+    emit('metrics', inference_seconds=elapsed, audio_seconds=info.duration,
+         real_time_factor=elapsed / max(info.duration, .001))
     return {'cancelled': stop.is_set()}
 
 
@@ -373,10 +430,21 @@ def serve(clean_text, commands_input=None, cache=None):
                 result['cancelled'] = True
                 continue
             name = options.get('model_name', 'small')
-            from annie.whisper_models import preparation_status
-            with preparation_status(name, emit) as report:
-                model, device, reused = cache.get(name, report=report)
-            emit('status', text=f"Whisper ready [{device}] ({'reused' if reused else 'loaded'} {name})")
+            model = None
+            if options.get('transcription_backend', 'local') == 'meta_voice':
+                from annie.meta_voice import MetaVoiceBackend, VoiceUnavailable
+                try:
+                    model = MetaVoiceBackend(api_key=getattr(cfg, 'META_API_KEY', ''),
+                                             language=options.get('language', ''))
+                    emit('metrics', backend='meta_voice', device='Cloud')
+                except VoiceUnavailable as exc:
+                    emit('warning', text=f'{exc} Using Local Whisper.')
+            if model is None:
+                from annie.whisper_models import preparation_status
+                with preparation_status(name, emit) as report:
+                    model, device, reused = cache.get(name, report=report)
+                emit('status', text=f"Whisper ready [{device}] ({'reused' if reused else 'loaded'} {name})")
+                emit('metrics', backend='local', device=device, model_name=name)
             if stop.is_set():
                 result['cancelled'] = True
                 continue

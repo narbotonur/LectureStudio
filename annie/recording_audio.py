@@ -67,11 +67,24 @@ class DiskAudioSpool:
             self._write_header()
             self._checkpoint = time.monotonic()
 
-    def read(self, size=2048):
+    @property
+    def read_seconds(self):
+        with self._condition:
+            return self._read / self.bytes_per_second
+
+    def seek_reader(self, seconds):
+        """Rewind to acknowledged audio after a provider failure; reader must be idle."""
+        with self._condition:
+            self._read = min(self._written, max(0, int(seconds * self.sample_rate) * 2))
+
+    def read(self, size=2048, timeout=None):
         if size < 2 or size % 2:
             raise ValueError('Read size must contain complete int16 samples')
         with self._condition:
-            self._condition.wait_for(lambda: self._read < self._written or self._closed)
+            available = self._condition.wait_for(
+                lambda: self._read < self._written or self._closed, timeout=timeout)
+            if not available:
+                return b''
             if self._read >= self._written:
                 return None
             count = min(size, self._written - self._read)
@@ -111,18 +124,24 @@ class UtteranceSegmenter:
         self._samples = 0
         self._speech = 0
         self._silence = 0
+        self._received_samples = 0
+        self._start_sample = 0
+        self.last_start_sample = 0
+        self.last_end_sample = 0
 
     @property
     def buffered_samples(self):
         return self._samples
 
     def push(self, pcm, is_speech):
+        self._received_samples += len(pcm) // 2
         if not self._chunks and not is_speech:
             self._pre.append(pcm)
             return None
         if not self._chunks:
             self._chunks.extend(self._pre)
             self._samples = sum(len(chunk) // 2 for chunk in self._pre)
+            self._start_sample = self._received_samples - len(pcm) // 2 - self._samples
             self._pre.clear()
         self._chunks.append(pcm)
         self._samples += len(pcm) // 2
@@ -137,6 +156,8 @@ class UtteranceSegmenter:
 
     def flush(self):
         result = b''.join(self._chunks) if self._speech >= self.min_speech_frames else None
+        self.last_start_sample = self._start_sample
+        self.last_end_sample = self._start_sample + self._samples
         self._chunks.clear()
         self._samples = self._speech = self._silence = 0
         self._pre.clear()

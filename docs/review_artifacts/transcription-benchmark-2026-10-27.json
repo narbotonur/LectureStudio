@@ -1,0 +1,38 @@
+{
+  "date_local": "2026-10-27",
+  "baseline": "f2fd4285479b44d9f54fc98b90750bca1d337974",
+  "fixture": {
+    "origin": "Windows System.Speech local text-to-speech; generated for this test",
+    "contains_private_audio": false,
+    "text": "This is a fictional lecture for testing. Your computer systems assignment is due on Friday at five P M. For the exam, review the stack pointer, saved registers, and recursive procedure calls. Practice the examples from lecture before next Wednesday.",
+    "encoding": "16000 Hz mono PCM16 WAV",
+    "audio_seconds": 21.885,
+    "wav_tracked": false
+  },
+  "measurement": {
+    "backend": "local",
+    "model": "small",
+    "language": "en",
+    "device": "CPU",
+    "elapsed_seconds_including_model_load": 5.485,
+    "inference_seconds": 3.576687099877745,
+    "first_text_seconds_after_model_load": 3.5760917998850346,
+    "real_time_factor_excluding_model_load": 0.16343098468712564,
+    "segments": 6,
+    "cancelled": false
+  },
+  "diagnostics": {
+    "cuda_devices": 1,
+    "cuda_libraries_on_loader_path": {
+      "cublasLt64_12.dll": false,
+      "cublas64_12.dll": false,
+      "cudnn64_9.dll": false
+    }
+  },
+  "limits": [
+    "One synthesized English file, not a classroom microphone or noisy speech evaluation.",
+    "No recognition accuracy, live latency, GPU-speed, or Muse Voice performance claim.",
+    "Muse Voice protocol tested offline; no authenticated provider call was performed."
+  ],
+  "command": "python -B tools/benchmark_transcription.py --audio <generated-fixture.wav> --model small --language en"
+}
