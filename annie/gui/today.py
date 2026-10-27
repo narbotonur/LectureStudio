@@ -79,9 +79,16 @@ class TodayPage(QWidget):
         from annie.habits import HabitStore
         from annie.gui.habit_tracker import CompactRoutineWidget
         from annie.lecture_actions import ActionStore
+        from annie.obligations import ObligationStore
         from annie.planner import PlannerStore, _event_interval
         from annie.paths import DATA_DIR
         root = Path(self.root or DATA_DIR)
+        obligations = ObligationStore(root)
+        pending_count = len(obligations.list_proposals('pending')) + len(ActionStore(root).list_actions('pending'))
+        if pending_count:
+            review = role(QPushButton(f'{pending_count} finding(s) need review — check assignments and deadline changes'), 'primary')
+            review.clicked.connect(lambda: self.navigate.emit(10))
+            self.body.addWidget(review)
         self.body.addWidget(self._text('Up next', 'section'))
         upcoming = []
         for event in self.events:

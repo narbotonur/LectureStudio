@@ -1,4 +1,18 @@
-# Lecture Studio 0.5.0 · local hackathon build
+# Lecture Studio 0.6.0 · local deadline review build
+
+- Review groups mentions of an assignment and proposes a source-backed deadline correction.
+- Earlier and later quotes, the previous date and the proposed date remain visible before confirmation.
+- A native date/time picker and explicit assignment/date confirmation precede local deadline changes.
+- Versioned assignments keep history and project one active deadline into Inbox, with retry-safe recovery.
+- Today highlights findings awaiting review. Existing English desktop navigation is retained.
+- A live Muse Spark 1.3 check on a fictional correction completed successfully; it did not read or change personal lectures or deadlines.
+
+This is a structured analysis pipeline, not an implemented multi-step tool agent.
+Quote matching does not prove speech-recognition or semantic correctness. Real
+classroom/microphone acceptance, broader live model evaluation and credit balance
+verification remain separate. Legacy deadlines are preserved and not silently merged.
+
+## Previous version: 0.5.0
 
 - Today combines upcoming classes, approved study actions and daily routines.
 - Review finds lecture actions through Muse Spark and verifies quotes against timestamped segments before approval.

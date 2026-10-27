@@ -11,6 +11,28 @@ COURSES = [{'name': 'MATH 251', 'credits': 6, 'current_percent': 70, 'target_per
 
 
 class DailyPlanTests(unittest.TestCase):
+    def test_reviewed_deadline_creates_concrete_step_without_gpa_course(self):
+        deadline = {'id': 'deadline-1', 'origin_assignment_id': 'lab-2',
+                    'title': 'Lab 2', 'course': 'CSCI 231', 'due_at': '2026-11-06T17:00+05:00'}
+        items, _ = suggest_today(deadlines=[deadline], now=NOW)
+        self.assertEqual(items[0]['title'], 'Work on Lab 2')
+        self.assertEqual(items[0]['minutes'], 25)
+        self.assertEqual(items[0]['deadline_id'], 'lab-2')
+        self.assertEqual(items[0]['status'], 'suggested')
+
+    def test_accepted_deadline_step_keeps_time_but_refreshes_changed_due_date(self):
+        deadline = {'id': 'deadline-1', 'origin_assignment_id': 'lab-2',
+                    'title': 'Lab 2', 'course': 'CSCI 231', 'due_at': '2026-11-03T17:00+05:00'}
+        with tempfile.TemporaryDirectory() as root:
+            store = DailyPlanStore(root)
+            item = suggest_today(deadlines=[deadline], now=NOW)[0][0]
+            store.decide(item, 'accepted')
+            changed = {**deadline, 'due_at': '2026-11-06T17:00+05:00'}
+            items, _ = suggest_today(deadlines=[changed], decisions=store.decisions(), now=NOW)
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]['start'], item['start'])
+            self.assertIn('06 Nov', items[0]['reason'])
+
     def test_suggestions_avoid_classes_prayers_and_routine_duration(self):
         events = [{'summary': 'Class', 'start': {'dateTime': '2026-10-27T17:00:00+05:00'},
                    'end': {'dateTime': '2026-10-27T18:00:00+05:00'}}]

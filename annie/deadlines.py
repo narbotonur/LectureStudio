@@ -4,12 +4,22 @@ import datetime as dt
 import json
 from pathlib import Path
 import re
+import threading
 import uuid
 
 from annie.secure_storage import atomic_write
 
 TZ = dt.timezone(dt.timedelta(hours=5))
 MAX_SOURCE_CHARS = 180_000
+_LOCKS_GUARD = threading.Lock()
+_INBOX_LOCKS = {}
+
+
+def _inbox_lock(path):
+    """Serialize in-process Inbox writers, including different store instances."""
+    key = str(Path(path).resolve()).casefold()
+    with _LOCKS_GUARD:
+        return _INBOX_LOCKS.setdefault(key, threading.RLock())
 
 
 @dataclass(frozen=True)
@@ -125,13 +135,19 @@ class DeadlineStore:
             return []
         try:
             data = json.loads(self.path.read_text(encoding='utf-8'))
-            if data.get('version') != 1 or not isinstance(data.get('deadlines'), list):
+            if (not isinstance(data, dict) or data.get('version') != 1
+                    or not isinstance(data.get('deadlines'), list)
+                    or any(not isinstance(item, dict) for item in data['deadlines'])):
                 raise ValueError
             return data['deadlines']
         except Exception:
             raise ValueError('The saved deadline inbox is unreadable. Your file was left unchanged.') from None
 
     def add(self, course, source_name, candidates):
+        with _inbox_lock(self.path):
+            return self._add_locked(course, source_name, candidates)
+
+    def _add_locked(self, course, source_name, candidates):
         current = self.load()
         keys = {(item.get('title', '').casefold(), item.get('due_at')) for item in current}
         added = 0
@@ -150,3 +166,63 @@ class DeadlineStore:
                                  indent=2).encode('utf-8')
             atomic_write(self.path, payload)
         return added
+
+    def upsert_origin(self, origin_assignment_id, *, revision, course, title,
+                      due_at, evidence='', source_name='Lecture review'):
+        """Project one confirmed assignment version without touching legacy rows.
+
+        The SQLite obligation store owns the versions. This is an idempotent JSON
+        projection, not a transaction spanning both stores. All in-process writers
+        share a lock; the final file replacement remains atomic.
+        """
+        if (not isinstance(origin_assignment_id, str) or not origin_assignment_id
+                or len(origin_assignment_id) > 128 or isinstance(revision, bool)
+                or not isinstance(revision, int) or revision < 1):
+            raise ValueError('A confirmed assignment identity and revision are required.')
+        if not isinstance(title, str) or not title.strip() or len(title) > 160:
+            raise ValueError('A deadline title is required.')
+        if not isinstance(course, str) or len(course) > 100:
+            raise ValueError('Use a valid course name.')
+        try:
+            parsed = dt.datetime.fromisoformat(due_at)
+            if parsed.utcoffset() is None:
+                raise ValueError
+            due_at = parsed.astimezone(TZ).isoformat(timespec='minutes')
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError('A timezone-aware deadline is required.') from None
+        with _inbox_lock(self.path):
+            current = self.load()
+            matches = [item for item in current
+                       if item.get('origin_assignment_id') == origin_assignment_id]
+            if len(matches) > 1:
+                raise ValueError('This assignment has multiple Inbox projections. Review it before syncing.')
+            existing = matches[0] if matches else None
+            if existing is not None:
+                old_revision = existing.get('origin_revision', 0)
+                if isinstance(old_revision, bool) or not isinstance(old_revision, int):
+                    raise ValueError('The Inbox assignment revision is unreadable.')
+                if old_revision > revision:
+                    return dict(existing)
+                if old_revision == revision:
+                    if (existing.get('due_at') != due_at
+                            or existing.get('course') != course
+                            or existing.get('title') != title):
+                        raise ValueError('The same assignment revision has conflicting content.')
+                    return dict(existing)
+                history = existing.setdefault('origin_history', [])
+                if not isinstance(history, list):
+                    raise ValueError('The Inbox assignment history is unreadable.')
+                history.append({'revision': old_revision, 'title': existing.get('title'),
+                                'due_at': existing.get('due_at')})
+            else:
+                existing = {'id': uuid.uuid4().hex, 'status': 'open',
+                            'created_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
+                            'origin_assignment_id': origin_assignment_id, 'origin_history': []}
+                current.append(existing)
+            existing.update({'course': course, 'title': title, 'due_at': due_at,
+                             'origin_revision': revision, 'evidence': _clean(evidence, 6000),
+                             'source_name': _clean(source_name, 200), 'confidence': 'confirmed',
+                             'time_assumed': False})
+            atomic_write(self.path, json.dumps({'version': 1, 'deadlines': current},
+                                               ensure_ascii=False, indent=2).encode('utf-8'))
+            return dict(existing)

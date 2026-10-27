@@ -116,6 +116,28 @@ def suggest_today(courses=(), deadlines=(), tasks=(), events=(), prayers=None,
                            'reason': task.get('suggested_action') or 'Approved lecture action',
                            'action_id': task['id']})
     specific_courses = {task.get('course', '').casefold() for task in tasks}
+    # A reviewed deadline is useful even before the user configures GPA courses.
+    # This is a suggested work block, not an invented instruction from a lecturer.
+    dated = []
+    for deadline in deadlines:
+        if deadline.get('status', 'open') != 'open' or not deadline.get('id') or not deadline.get('title'):
+            continue
+        try:
+            due = _local_time(deadline['due_at'])
+        except (ValueError, TypeError, KeyError):
+            continue
+        dated.append((due, deadline))
+    for due, deadline in sorted(dated, key=lambda item: item[0]):
+        origin = deadline.get('origin_assignment_id') or deadline['id']
+        title = ('Follow up on overdue ' if due < now else 'Work on ') + deadline['title']
+        reason = f"{'Overdue' if due < now else 'Due'} {due:%d %b %H:%M} · confirmed local deadline"
+        existing = next((item for item in result if item.get('deadline_id') == origin), None)
+        if existing is not None:
+            existing.update(title=title, reason=reason)
+        candidates.append({'key': f'deadline:{origin}', 'title': title,
+                           'course': deadline.get('course', ''), 'minutes': 10 if due < now else 25,
+                           'reason': reason, 'action_id': '', 'deadline_id': origin})
+        specific_courses.add(deadline.get('course', '').casefold())
     for subject in sorted(_subjects(courses, deadlines, day), key=lambda s: -s['priority']):
         if subject['name'].casefold() in specific_courses:
             continue

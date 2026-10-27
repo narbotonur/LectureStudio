@@ -1,0 +1,4 @@
+# Keep frozen development-evaluation source hashes stable across Windows clones.
+tools/deadline_evaluation_cases.py text eol=lf
+tools/evaluate_deadline_changes.py text eol=lf
+annie/lecture_reconciliation.py text eol=lf

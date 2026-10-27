@@ -73,11 +73,14 @@ QPushButton#recordButton[state="busy"] {{ background: #30372D; color: {MUTED}; }
 QPushButton[role="warmAction"] {{ color: #E7C28F; border-color: #5E5038; background: #262219; }}
 QPushButton[role="warmAction"]:hover {{ background: #332B1E; border-color: #806D4C; color: #F3D3A6; }}
 QPushButton:disabled {{ color: #818B79; background: #252B21; border-color: {BORDER}; }}
-QLineEdit, QComboBox, QTimeEdit, QDateEdit, QSpinBox, QDoubleSpinBox {{ background: {SURFACE}; color: {TEXT};
+QLineEdit, QComboBox, QTimeEdit, QDateEdit, QDateTimeEdit, QSpinBox, QDoubleSpinBox {{ background: {SURFACE}; color: {TEXT};
     border: 1px solid {BORDER}; border-radius: 8px; padding: 9px; selection-background-color: #455C33; }}
 QLineEdit:focus, QComboBox:focus, QTextEdit:focus {{ border: 1px solid {ACCENT}; }}
 QLineEdit#courseContextInput {{ background: #1A1E18; border-color: #30372D; }}
 QAbstractSpinBox QLineEdit {{ border: none; padding: 0; background: transparent; }}
+QCalendarWidget QWidget {{ background: {RAISED}; color: {TEXT}; }}
+QCalendarWidget QAbstractItemView {{ background: {SURFACE}; color: {TEXT};
+    selection-background-color: {ACCENT}; selection-color: {BACKGROUND}; }}
 QComboBox::drop-down {{ border: none; width: 20px; }}
 QComboBox QAbstractItemView, QMenu {{ background: {RAISED}; color: {TEXT}; border: 1px solid {BORDER}; selection-background-color: #455C33; }}
 QMenu {{ padding: 6px; }}
