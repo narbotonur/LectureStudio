@@ -271,10 +271,31 @@ def generate_week(monday, settings, calendar_events=(), prayer_days=None,
         for day in days:
             if day < max(created, now.date()) or not (habit['days_mask'] & (1 << day.weekday())):
                 continue
-            duration = (min(120, max(10, round(habit['target'])))
+            duration = (min(120, max(1, round(habit['duration_minutes'])))
+                        if habit.get('duration_minutes') else
+                        min(120, max(10, round(habit['target'])))
                         if habit['kind'] == 'minutes' else 30 if habit['kind'] == 'count' else 15)
             midnight = dt.datetime.combine(day, dt.time(), TZ)
             slot = None
+            anchor = habit.get('anchor', '')
+            prayer = {'after_fajr': 'Fajr', 'after_maghrib': 'Maghrib'}.get(anchor)
+            anchored = None
+            try:
+                if prayer:
+                    anchored = dt.datetime.fromisoformat(prayer_days[day][prayer]).astimezone(TZ)
+                    anchored += dt.timedelta(minutes=settings['prayer_block_minutes'])
+                elif anchor == 'before_sleep':
+                    anchored = midnight + dt.timedelta(minutes=day_end - duration)
+            except (KeyError, ValueError, TypeError):
+                warnings.append(f"Prayer anchor unavailable for {habit['name']} ({day:%a}); choose a time manually.")
+                continue
+            if anchored is not None:
+                end = anchored + dt.timedelta(minutes=duration)
+                if anchored > now and day_start <= anchored.hour * 60 + anchored.minute and end <= midnight + dt.timedelta(minutes=day_end) and not _overlaps(anchored, end, occupied[day]):
+                    slot = anchored, end
+                else:
+                    warnings.append(f"Anchored routine needs review: {habit['name']} ({day:%a}).")
+                    continue
             if habit.get('preferred_time'):
                 minute = _clock(habit['preferred_time'])
                 start, end = midnight + dt.timedelta(minutes=minute), midnight + dt.timedelta(minutes=minute + duration)

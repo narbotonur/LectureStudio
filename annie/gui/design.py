@@ -31,6 +31,7 @@ QLabel[role="hero"] {{ font-size: 34px; font-weight: 600; }}
 QLabel[role="section"] {{ font-size: 17px; font-weight: 600; }}
 QLabel[role="studyClock"] {{ color: {ACCENT}; font-family: '{MONO_FONT}'; font-size: 46px; font-weight: 600; padding: 12px 0; }}
 QTableWidget {{ background: {SURFACE}; alternate-background-color: {RAISED}; border: 1px solid {BORDER};
+    color: {TEXT}; selection-color: {TEXT};
     border-radius: 10px; gridline-color: {BORDER}; selection-background-color: #35452B; }}
 QTableWidget::item {{ padding: 6px; }}
 QHeaderView::section {{ background: {RAISED}; color: {MUTED}; border: none; padding: 8px; }}

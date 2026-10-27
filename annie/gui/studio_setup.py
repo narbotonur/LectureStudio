@@ -1,5 +1,6 @@
 """First-run onboarding and standalone account/device settings."""
 import json
+import os
 from pathlib import Path
 import webbrowser
 import sys
@@ -65,6 +66,30 @@ class StudioSetup(QDialog):
         privacy = label('AI requests send the selected lecture text, slides or uploaded materials to Google. Usage limits and charges belong to your account. Local Whisper transcription and study timers do not need an AI key.')
         privacy.setWordWrap(True)
         content.addWidget(privacy)
+        content.addWidget(label('Meta · lecture actions & transcription', 'section'))
+        self.meta_key = QLineEdit(cfg.META_API_KEY)
+        self.meta_key.setEchoMode(QLineEdit.Password)
+        self.meta_key.setPlaceholderText('Meta Model API key')
+        self.meta_key.setAccessibleName('Meta Model API key')
+        content.addWidget(self.meta_key)
+        self.meta_model = QLineEdit(cfg.META_MODEL)
+        self.backend = QComboBox()
+        self.backend.addItem('Local Whisper · offline', 'local')
+        self.backend.addItem('Muse Voice · sends audio to Meta', 'meta_voice')
+        self.backend.setCurrentIndex(max(0, self.backend.findData(cfg.TRANSCRIPTION_BACKEND)))
+        self.language = QLineEdit(cfg.TRANSCRIPTION_LANGUAGE)
+        self.language.setPlaceholderText('Auto, or ISO code such as en / ru / kk')
+        meta_form = QFormLayout()
+        meta_form.addRow('Lecture reasoning model', self.meta_model)
+        meta_form.addRow('Speech recognition', self.backend)
+        meta_form.addRow('Lecture language', self.language)
+        content.addLayout(meta_form)
+        meta_note = label('Find lecture actions sends the selected transcript to Meta. Muse Voice also sends audio while recording. Russian and Kazakh are not in its evaluated language list; use Local Whisper for those lectures. Cloud use is billed to your account.')
+        meta_note.setWordWrap(True)
+        content.addWidget(meta_note)
+        self.auto_notes = QCheckBox('Generate legacy AI notes automatically after transcription')
+        self.auto_notes.setChecked(cfg.AUTO_GENERATE_NOTES)
+        content.addWidget(self.auto_notes)
         content.addWidget(label('2 · Google Calendar', 'section'))
         self.calendar_status = label('')
         self.calendar_status.setWordWrap(True)
@@ -241,12 +266,20 @@ class StudioSetup(QDialog):
                 raise ValueError('Enter only the phone IP/host; use the separate port field.')
             if self.key.text().strip() and not self.consent.isChecked():
                 raise ValueError('Enable cloud AI to use this key, or clear it to continue locally.')
+            if self.backend.currentData() == 'meta_voice' and not (self.meta_key.text().strip() or
+                    os.environ.get('META_API_KEY') or os.environ.get('MODEL_API_KEY')):
+                raise ValueError('Enter your Meta key before selecting Muse Voice.')
             cfg.GEMINI_API_KEY = self.key.text().strip()
             cfg.GEMINI_MODEL = self.model.text().strip() or cfg.GEMINI_MODEL
             cfg.PHONE_IP, cfg.PHONE_PORT = host, port
             cfg.AUDIO_INPUT_DEVICE = self.microphone.currentData()
             cfg.AUDIO_INPUT_DEVICE_NAME = self.microphone.currentText()
             cfg.WHISPER_MODEL = self.whisper.currentData()
+            cfg.META_API_KEY = self.meta_key.text().strip()
+            cfg.META_MODEL = self.meta_model.text().strip() or 'muse-spark-1.3'
+            cfg.TRANSCRIPTION_BACKEND = self.backend.currentData()
+            cfg.TRANSCRIPTION_LANGUAGE = self.language.text().strip().lower()
+            cfg.AUTO_GENERATE_NOTES = self.auto_notes.isChecked()
             cfg.MEETING_PROMPTS_ENABLED = self.prompts.isChecked()
             cfg.save_settings()
             from annie.startup import set_enabled

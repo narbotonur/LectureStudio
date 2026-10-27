@@ -550,6 +550,10 @@ class GeminiMeetingWorker(QThread):
 # ─────────────────────────────────────────────────────────────
 class WhisperMeetingWorker(QThread):
     transcript_updated = pyqtSignal(str)
+    transcript_segment = pyqtSignal(dict)
+    partial_transcript_updated = pyqtSignal(str)
+    metrics_updated = pyqtSignal(dict)
+    transcript_ready = pyqtSignal()
     summary_ready = pyqtSignal(str)
     status_changed = pyqtSignal(str)
     audio_level = pyqtSignal(float, bool)
@@ -569,6 +573,7 @@ class WhisperMeetingWorker(QThread):
         self.template_name = template_name
         self.user_notes = user_notes.strip()
         self.full_transcript = []
+        self.transcript_segments = []
         self.last_metrics = {}
         self.last_error = ""
         self.last_warning = ""
@@ -593,6 +598,8 @@ class WhisperMeetingWorker(QThread):
                 self, mode="record", model_name=self.model_name, device=self.device,
                 subject_context=self.subject_context, agc=cfg.AUDIO_AGC_ENABLED,
                 recording_path=str(recording_path),
+                transcription_backend=cfg.TRANSCRIPTION_BACKEND,
+                language=cfg.TRANSCRIPTION_LANGUAGE or None,
             )
         except Exception as exc:
             self.last_error = str(exc)
@@ -620,6 +627,10 @@ class WhisperMeetingWorker(QThread):
             )
             self.status_changed.emit("Recording incomplete. Partial transcript and saved audio preserved.")
             return
+        self.transcript_ready.emit()
+        if not cfg.AUTO_GENERATE_NOTES:
+            self.status_changed.emit('Transcript ready. Review lecture actions or create notes when needed.')
+            return
         self.status_changed.emit("Generating AI Notes...")
         try:
             summary = generate_ai_summary_sync(text_content, self.subject_context, self.template_name, user_notes=self.user_notes)
@@ -638,6 +649,10 @@ class WhisperMeetingWorker(QThread):
 
 class AudioFileMeetingWorker(QThread):
     transcript_updated = pyqtSignal(str)
+    transcript_segment = pyqtSignal(dict)
+    partial_transcript_updated = pyqtSignal(str)
+    metrics_updated = pyqtSignal(dict)
+    transcript_ready = pyqtSignal()
     summary_ready = pyqtSignal(str)
     status_changed = pyqtSignal(str)
     progress_changed = pyqtSignal(int)
@@ -654,6 +669,7 @@ class AudioFileMeetingWorker(QThread):
         self.user_notes = user_notes.strip()
         self._running = True
         self.full_transcript = []
+        self.transcript_segments = []
         self.last_metrics = {}
         self.last_error = ""
 
@@ -664,6 +680,7 @@ class AudioFileMeetingWorker(QThread):
 
     def run(self):
         from annie.whisper_events import consume_session
+        from annie import config as cfg
         if not self._running:
             return
         if not os.path.isfile(self.file_path):
@@ -672,7 +689,9 @@ class AudioFileMeetingWorker(QThread):
             return
         try:
             result = consume_session(self, mode="file", model_name=self.model_name,
-                                     file_path=self.file_path, subject_context=self.subject_context)
+                                     file_path=self.file_path, subject_context=self.subject_context,
+                                     transcription_backend=cfg.TRANSCRIPTION_BACKEND,
+                                     language=cfg.TRANSCRIPTION_LANGUAGE or None)
             if result.get('cancelled') or not self._running:
                 self.status_changed.emit("Transcription canceled.")
                 return
@@ -682,6 +701,10 @@ class AudioFileMeetingWorker(QThread):
             full_text = "".join(self.full_transcript).strip()
             if not full_text:
                 self.summary_ready.emit("# Empty Recording\n\nNo speech was detected in this file.")
+                return
+            self.transcript_ready.emit()
+            if not cfg.AUTO_GENERATE_NOTES:
+                self.status_changed.emit('Transcript ready. Review lecture actions or create notes when needed.')
                 return
             self.status_changed.emit("Synthesizing AI Notes...")
             summary = generate_ai_summary_sync(full_text, self.subject_context, self.template_name, user_notes=self.user_notes)

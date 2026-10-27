@@ -8,6 +8,7 @@ import sys
 import webbrowser
 import datetime
 import math
+import uuid
 from typing import Optional, List, Dict
 
 from PyQt5.QtWidgets import (
@@ -517,6 +518,8 @@ class MeetingWindow(QDialog):
         self.resize(1180, 820)
         self._is_pinned = False
         self._last_transcript = ""
+        self._transcript_segments = []
+        self._lecture_source_name = 'Current lecture'
         self._recording = False
         self._jobs = set()
         self._mini_dock = None
@@ -697,6 +700,9 @@ class MeetingWindow(QDialog):
         nav_bar.setSpacing(5)
         self.nav_caption = label("WORKSPACE", "navCaption")
         nav_bar.addWidget(self.nav_caption)
+        self.tab_today_btn = self._create_tab_btn('Today')
+        self.tab_today_btn.clicked.connect(lambda: self._switch_tab(9))
+        nav_bar.addWidget(self.tab_today_btn)
         for index, (attr, title) in enumerate((("tab_notes_btn", "Notes"),
                 ("tab_transcript_btn", "Transcript"), ("tab_flashcards_btn", "Flashcards"),
                 ("tab_chat_btn", "Assistant"), ("tab_schedule_btn", "Schedule"),
@@ -705,11 +711,22 @@ class MeetingWindow(QDialog):
             button = self._create_tab_btn(title, index == 0)
             button.clicked.connect(lambda checked=False, i=index: self._switch_tab(i))
             setattr(self, attr, button)
-            nav_bar.addWidget(button)
+            if index in (0, 4, 6):
+                button.setText({0: 'Lecture', 4: 'Schedule', 6: 'Academics'}[index])
+                nav_bar.addWidget(button)
+            else:
+                button.hide()
+        self.tab_review_btn = self._create_tab_btn('Review')
+        self.tab_review_btn.clicked.connect(lambda: self._switch_tab(10))
+        nav_bar.insertWidget(3, self.tab_review_btn)
         nav_bar.addStretch()
         nav_bar.addWidget(self.updates_panel.check_button)
         self.tools_btn = QPushButton("More")
         menu = QMenu(self.tools_btn)
+        for title, index in [('Transcript', 1), ('Flashcards', 2), ('Study timer', 5),
+                             ('Daily routines', 7), ('Weekly plan · advanced', 8), ('Legacy assistant', 3)]:
+            menu.addAction(title, lambda checked=False, i=index: self._switch_tab(i))
+        menu.addSeparator()
         from annie.prayer_startup import launch as launch_prayer_widget
         menu.addAction("Prayer times widget · Намаз", launch_prayer_widget)
         menu.addSeparator()
@@ -777,6 +794,18 @@ class MeetingWindow(QDialog):
         self.planner_page = WeeklyPlannerPage(self)
         self.stack.addWidget(self.planner_page)
 
+        from annie.gui.today import TodayPage
+        self.today_page = TodayPage(self)
+        self.today_page.navigate.connect(self._switch_tab)
+        self.today_page.study_requested.connect(self._start_daily_study)
+        self.stack.addWidget(self.today_page)
+        self.timetable_view.events_loaded.connect(self.today_page.set_events)
+        from annie.gui.lecture_review import LectureReviewPage
+        self.review_page = LectureReviewPage(self)
+        self.review_page.actions_changed.connect(self.today_page.reload)
+        self.review_page.evidence_requested.connect(self._show_transcript_evidence)
+        self.stack.addWidget(self.review_page)
+
         self.workspace_body = QBoxLayout(QBoxLayout.LeftToRight)
         self.workspace_body.setSpacing(12)
         self.workspace_body.addWidget(self.navigation)
@@ -794,6 +823,10 @@ class MeetingWindow(QDialog):
         self.subject_input.setPlaceholderText("Course or topic…")
         self.subject_input.setObjectName("courseContextInput")
         bottom_bar.addWidget(self.subject_input, 1)
+        for title, index in [('Transcript', 1), ('Review actions', 10)]:
+            button = QPushButton(title)
+            button.clicked.connect(lambda checked=False, i=index: self._switch_tab(i))
+            bottom_bar.addWidget(button)
 
         # Gen Anki Cards Button
         self.gen_anki_btn = QPushButton("Make flashcards")
@@ -853,7 +886,7 @@ class MeetingWindow(QDialog):
             self._shortcuts.append(QShortcut(f"Ctrl+{index + 1}", self,
                 activated=lambda i=index: self._switch_tab(i)))
         self._shortcuts.append(QShortcut("Ctrl+Return", self, activated=self._fuse_notes))
-        self._switch_tab(0)
+        self._switch_tab(9)
 
     def _create_tab_btn(self, text: str, active: bool = False) -> QPushButton:
         btn = QPushButton(text)
@@ -908,6 +941,8 @@ class MeetingWindow(QDialog):
 
     def _switch_tab(self, index: int):
         self.stack.setCurrentIndexAnimated(index)
+        self._style_tab_btn(self.tab_today_btn, index == 9)
+        self._style_tab_btn(self.tab_review_btn, index == 10)
         self._style_tab_btn(self.tab_notes_btn, index == 0)
         self._style_tab_btn(self.tab_transcript_btn, index == 1)
         self._style_tab_btn(self.tab_flashcards_btn, index == 2)
@@ -917,12 +952,19 @@ class MeetingWindow(QDialog):
         self._style_tab_btn(self.tab_gpa_btn, index == 6)
         self._style_tab_btn(self.tab_habits_btn, index == 7)
         self._style_tab_btn(self.tab_plan_btn, index == 8)
-        self.recording_panel.setVisible(index not in (5, 6, 7, 8))
-        self.bottom_panel.setVisible(index not in (5, 6, 7, 8))
+        self.recording_panel.setVisible(index not in (5, 6, 7, 8, 9, 10))
+        self.bottom_panel.setVisible(index not in (5, 6, 7, 8, 9, 10))
         if index == 7:
             self.habits_page.reload()
         if index == 8:
             self.planner_page.reload()
+        if index == 9:
+            self.today_page.reload()
+        if index == 10:
+            self.review_page.set_transcript(self._transcript_segments,
+                course=self.subject_input.text().strip(), source_name=self._lecture_source_name)
+        if index == 6:
+            self.gpa_page.reload()
         self.gen_anki_btn.setVisible(index in (0, 1, 2))
         self.export_btn.setVisible(index in (0, 1, 2))
         if index == 4:
@@ -931,6 +973,19 @@ class MeetingWindow(QDialog):
     def _update_study_status(self, text):
         self.study_status_btn.setText(text)
         self.study_status_btn.setVisible(bool(text))
+
+    def _start_daily_study(self, subject):
+        try:
+            if self.study_page.store.active():
+                self._switch_tab(5)
+                return
+            saved = self.study_page.store.add_subject(subject)
+            self.study_page.store.start(saved['id'], sync=False)
+            self.study_page._load_subjects(saved['id'])
+            self.study_page._refresh()
+            self._switch_tab(5)
+        except (ValueError, OSError) as exc:
+            self.operation_status.setText(str(exc))
 
     def _open_moodle_setup(self):
         from annie.gui.moodle_setup import MoodleSetup
@@ -1201,7 +1256,7 @@ class MeetingWindow(QDialog):
     def _toggle_recording(self):
         if self._recording:
             # Stop
-            self.record_btn.setText("Creating notes…")
+            self.record_btn.setText("Finishing transcript…")
             self.record_btn.setEnabled(False)
             self._set_record_button_state("busy")
             self.worker.user_notes = self.user_scratchpad.toPlainText().strip()
@@ -1214,6 +1269,8 @@ class MeetingWindow(QDialog):
                 return
             # Start
             self._last_transcript = ""
+            self._transcript_segments = []
+            self._lecture_source_name = f"Lecture {datetime.datetime.now():%Y-%m-%d %H:%M} · {uuid.uuid4().hex[:8]}"
             self.transcript_area.clear()
             self.notes_area.clear()
             self.flashcards_area.clear()
@@ -1233,6 +1290,7 @@ class MeetingWindow(QDialog):
             self.worker.transcript_updated.connect(self._on_transcript)
             self.worker.summary_ready.connect(self._on_summary)
             self.worker.status_changed.connect(self._on_worker_status)
+            self._connect_transcription_events(self.worker)
             if hasattr(self.worker, 'audio_level'):
                 self.worker.audio_level.connect(self.signal_widget.update_audio_level)
             if hasattr(self.worker, 'capture_finished'):
@@ -1255,6 +1313,8 @@ class MeetingWindow(QDialog):
 
         self.transcript_area.clear()
         self._last_transcript = ""
+        self._transcript_segments = []
+        self._lecture_source_name = f"{os.path.basename(file_path)} · {uuid.uuid4().hex[:8]}"
         self.notes_area.clear()
         self.flashcards_area.clear()
 
@@ -1266,6 +1326,7 @@ class MeetingWindow(QDialog):
         self.worker.transcript_updated.connect(self._on_transcript)
         self.worker.summary_ready.connect(self._on_summary)
         self.worker.status_changed.connect(self._on_worker_status)
+        self._connect_transcription_events(self.worker)
         self._start_job(self.worker)
         self._switch_tab(1)
 
@@ -1358,6 +1419,51 @@ class MeetingWindow(QDialog):
         cursor.insertText(text)
         self.transcript_area.setTextCursor(cursor)
         self._last_transcript = self.transcript_area.toPlainText()
+
+    def _connect_transcription_events(self, worker):
+        worker.transcript_segment.connect(self._on_transcript_segment)
+        worker.metrics_updated.connect(self._on_transcription_metrics)
+        worker.partial_transcript_updated.connect(
+            lambda text: self.operation_status.setText(f'Listening · {text[-180:]}') if text else None)
+        worker.transcript_ready.connect(self._on_transcription_ready)
+
+    def _on_transcript_segment(self, segment):
+        self._transcript_segments.append(segment)
+
+    def _on_transcription_metrics(self, metrics):
+        parts = []
+        if metrics.get('backend'):
+            parts.append(str(metrics['backend']))
+        if metrics.get('inference_seconds') and metrics.get('audio_seconds'):
+            parts.append(f"processing {metrics['inference_seconds'] / metrics['audio_seconds']:.2f}× real time")
+        if metrics.get('backlog_seconds', 0) >= 2:
+            parts.append(f"{metrics['backlog_seconds']:.0f}s pending")
+        if metrics.get('audio_interruptions'):
+            parts.append(f"{metrics['audio_interruptions']} audio interruptions")
+        if parts:
+            self.operation_status.setText(' · '.join(parts))
+
+    def _on_transcription_ready(self):
+        self.record_btn.setText('Start recording')
+        self.record_btn.setEnabled(True)
+        self._set_record_button_state('idle')
+        self.review_page.set_transcript(self._transcript_segments,
+            course=self.subject_input.text().strip(), source_name=self._lecture_source_name)
+        self._switch_tab(1)
+
+    def _show_transcript_evidence(self, timestamp):
+        action = self.review_page._current()
+        if action and action.get('source_name') != self._lecture_source_name:
+            self.review_page.status.setText('This finding belongs to an earlier lecture. Its saved quote is shown here; open that recording to listen.')
+            return
+        segment = next((item for item in self._transcript_segments
+                        if item['start'] <= timestamp <= item['end']), None)
+        self._switch_tab(1)
+        if segment:
+            cursor = self.transcript_area.document().find(segment['text'])
+            if not cursor.isNull():
+                self.transcript_area.setTextCursor(cursor)
+                self.transcript_area.ensureCursorVisible()
 
     def _on_summary(self, summary_text: str):
         self.record_btn.setText("Start recording")
@@ -1499,7 +1605,7 @@ class MeetingWindow(QDialog):
             self.meeting_state_changed.emit(False)
         self.signal_widget.set_active(False)
         self.record_btn.setEnabled(False)
-        self.record_btn.setText("Finishing notes...")
+        self.record_btn.setText("Finishing transcript…")
         self._set_record_button_state("busy")
 
     def _on_backlog(self, seconds):
@@ -1538,7 +1644,7 @@ class MeetingWindow(QDialog):
                 self.updates_panel.service.is_running() or
                 self.updates_panel.downloads.is_running() or
                 self.timetable_view.has_running_job() or self.study_page.has_running_job() or
-                self.planner_page.has_running_job())
+                self.planner_page.has_running_job() or self.review_page.has_running_job())
 
     def stop_jobs(self):
         self.updates_panel.service.stop()
@@ -1547,6 +1653,7 @@ class MeetingWindow(QDialog):
             self.updates_panel.dialog.close()
         self.study_page.stop_background()
         self.planner_page.stop_background()
+        self.review_page.stop_background()
         if self._mini_dock is not None:
             self._mini_dock.hide_immediately()
         for job in list(self._jobs):

@@ -16,6 +16,13 @@ GROQ_API_KEY = ""
 # Get FREE key: https://aistudio.google.com/app/apikey
 GEMINI_API_KEY = ""
 
+# Meta credentials use the same encrypted per-user secret store as other keys.
+META_API_KEY = ""
+META_MODEL = 'muse-spark-1.3'
+TRANSCRIPTION_BACKEND = 'local'
+TRANSCRIPTION_LANGUAGE = ''
+AUTO_GENERATE_NOTES = False
+
 # Get FREE key: https://elevenlabs.io/
 ELEVENLABS_API_KEY = ""
 ELEVENLABS_VOICE_ID = "EXAVITQu4vr4xnSDxMaL"  # Bella (Multilingual)
@@ -117,6 +124,7 @@ def load_settings():
     global AUDIO_INPUT_DEVICE, AUDIO_INPUT_DEVICE_NAME, AUDIO_AGC_ENABLED
     global MEETING_PROMPTS_ENABLED, MEETING_PROMPT_AUDIO_SOURCE
     global WHISPER_MODEL
+    global META_MODEL, TRANSCRIPTION_BACKEND, TRANSCRIPTION_LANGUAGE, AUTO_GENERATE_NOTES
 
     if not os.path.exists(SETTINGS_FILE):
         return
@@ -169,6 +177,11 @@ def load_settings():
             MEETING_PROMPT_AUDIO_SOURCE = data["meeting_prompt_audio_source"]
         if data.get('whisper_model') in ('base', 'small', 'large-v3-turbo'):
             WHISPER_MODEL = data['whisper_model']
+        META_MODEL = str(data.get('meta_model') or META_MODEL)
+        if data.get('transcription_backend') in ('local', 'meta_voice'):
+            TRANSCRIPTION_BACKEND = data['transcription_backend']
+        TRANSCRIPTION_LANGUAGE = str(data.get('transcription_language') or '')
+        AUTO_GENERATE_NOTES = bool(data.get('auto_generate_notes', False))
 
         print("  [CONFIG] Settings loaded from annie_settings.json")
     except Exception as e:
@@ -200,10 +213,14 @@ def save_settings():
         "meeting_prompts_enabled": MEETING_PROMPTS_ENABLED,
         "meeting_prompt_audio_source": MEETING_PROMPT_AUDIO_SOURCE,
         "whisper_model": WHISPER_MODEL,
+        "meta_model": META_MODEL,
+        "transcription_backend": TRANSCRIPTION_BACKEND,
+        "transcription_language": TRANSCRIPTION_LANGUAGE,
+        "auto_generate_notes": AUTO_GENERATE_NOTES,
     }
     try:
         secrets = {name.lower(): globals()[name] for name in
-                   ('GEMINI_API_KEY', 'GROQ_API_KEY', 'WEATHER_API_KEY', 'ELEVENLABS_API_KEY')}
+                   ('GEMINI_API_KEY', 'GROQ_API_KEY', 'WEATHER_API_KEY', 'ELEVENLABS_API_KEY', 'META_API_KEY')}
         write_secret(SECRETS_FILE, secrets)
         for name in secrets:
             data.pop(name, None)
@@ -219,7 +236,7 @@ load_settings()
 if os.path.exists(SECRETS_FILE):
     try:
         for _name, _value in read_secret(SECRETS_FILE).items():
-            if _name.upper() in ('GEMINI_API_KEY', 'GROQ_API_KEY', 'WEATHER_API_KEY', 'ELEVENLABS_API_KEY'):
+            if _name.upper() in ('GEMINI_API_KEY', 'GROQ_API_KEY', 'WEATHER_API_KEY', 'ELEVENLABS_API_KEY', 'META_API_KEY'):
                 globals()[_name.upper()] = _value
     except Exception:
         print('  [CONFIG] Protected credentials unavailable; open Accounts & Setup to reconnect.')
