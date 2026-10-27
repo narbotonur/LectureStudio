@@ -14,6 +14,36 @@ HABIT_DB_PATH = Path(DATA_DIR) / 'habits.sqlite3'
 TZ = dt.timezone(dt.timedelta(hours=5))
 DAY_NAMES = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
 KINDS = ('done', 'minutes', 'count')
+ROUTINES = ('morning', 'evening', 'flexible')
+ANCHORS = ('', 'after_fajr', 'after_maghrib', 'before_sleep', 'commute')
+ANCHOR_LABELS = {'': 'Any time', 'after_fajr': 'After Fajr',
+                 'after_maghrib': 'After Maghrib', 'before_sleep': 'Before sleep',
+                 'commute': 'On the commute'}
+
+
+def _routine_settings(kind, target, routine, anchor, minimum, ideal, duration):
+    if routine not in ROUTINES:
+        raise ValueError('Choose Morning, Evening, or Flexible.')
+    if anchor not in ANCHORS:
+        raise ValueError('Choose a supported routine anchor.')
+    minimum = target if minimum is None else _number(minimum, .1, target, 'Minimum target')
+    ideal = target if ideal is None else _number(ideal, target, 1_000_000, 'Ideal target')
+    if kind == 'done':
+        minimum = ideal = 1.0
+    duration = (target if kind == 'minutes' else 30 if kind == 'count' else 15
+                ) if duration is None else _number(duration, 1, 1440, 'Duration')
+    return routine, anchor, minimum, ideal, duration
+
+
+def progress_level(habit, value):
+    """Progress has useful milestones without treating minimum as a missed day."""
+    if value >= habit.get('ideal_target', habit['target']):
+        return 'ideal' if habit.get('ideal_target', habit['target']) > habit['target'] else 'normal'
+    if value >= habit['target']:
+        return 'normal'
+    if value >= habit.get('minimum_target', habit['target']):
+        return 'minimum'
+    return 'started' if value else 'pending'
 
 
 def _clean_name(value):
@@ -91,6 +121,20 @@ class HabitStore:
                     PRIMARY KEY(habit_id, day));
                 CREATE INDEX IF NOT EXISTS habit_log_day ON habit_logs(day);
             ''')
+            # Add columns in place. Existing goals, logs and preferred times stay intact.
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(habits)')}
+            additions = {'routine': "TEXT NOT NULL DEFAULT 'flexible'",
+                         'anchor': "TEXT NOT NULL DEFAULT ''",
+                         'minimum_target': 'REAL', 'ideal_target': 'REAL',
+                         'duration_minutes': 'REAL'}
+            for name, declaration in additions.items():
+                if name not in columns:
+                    db.execute(f'ALTER TABLE habits ADD COLUMN {name} {declaration}')
+            db.execute('UPDATE habits SET minimum_target=target WHERE minimum_target IS NULL')
+            db.execute('UPDATE habits SET ideal_target=target WHERE ideal_target IS NULL')
+            db.execute("""UPDATE habits SET duration_minutes=CASE kind
+                       WHEN 'minutes' THEN target WHEN 'count' THEN 30 ELSE 15 END
+                       WHERE duration_minutes IS NULL""")
 
     @contextmanager
     def connection(self):
@@ -119,27 +163,43 @@ class HabitStore:
             return [dict(row) for row in db.execute(query)]
 
     def add(self, name, kind='done', target=1, unit='', days_mask=127,
-            preferred_time='', now=None):
+            preferred_time='', now=None, *, routine='flexible', anchor='',
+            minimum_target=None, ideal_target=None, duration_minutes=None):
         values = _settings(name, kind, target, unit, days_mask, preferred_time)
+        routine_values = _routine_settings(values[1], values[2], routine, anchor,
+                                          minimum_target, ideal_target, duration_minutes)
         try:
             with self.connection() as db:
                 habit_id = uuid.uuid4().hex
-                db.execute('INSERT INTO habits VALUES (?,?,?,?,?,?,?,?,?,?)',
+                db.execute('''INSERT INTO habits
+                           (id,name,name_key,kind,target,unit,days_mask,preferred_time,
+                            active,created,routine,anchor,minimum_target,ideal_target,duration_minutes)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                            (habit_id, values[0], values[0].casefold(), *values[1:], 1,
-                            time.time() if now is None else now))
+                            time.time() if now is None else now, *routine_values))
                 return self._habit(db, habit_id)
         except sqlite3.IntegrityError:
             raise ValueError('A habit with this name already exists.') from None
 
     def update(self, habit_id, name, kind, target, unit, days_mask,
-               preferred_time='', active=True):
+               preferred_time='', active=True, *, routine=None, anchor=None,
+               minimum_target=None, ideal_target=None, duration_minutes=None):
         values = _settings(name, kind, target, unit, days_mask, preferred_time)
         try:
             with self.connection() as db:
-                self._habit(db, habit_id)
+                previous = self._habit(db, habit_id)
+                same_goal = previous['kind'] == values[1] and previous['target'] == values[2]
+                routine_values = _routine_settings(
+                    values[1], values[2], previous['routine'] if routine is None else routine,
+                    previous['anchor'] if anchor is None else anchor,
+                    previous['minimum_target'] if minimum_target is None and same_goal else minimum_target,
+                    previous['ideal_target'] if ideal_target is None and same_goal else ideal_target,
+                    previous['duration_minutes'] if duration_minutes is None and same_goal else duration_minutes)
                 db.execute('''UPDATE habits SET name=?,name_key=?,kind=?,target=?,unit=?,
-                              days_mask=?,preferred_time=?,active=? WHERE id=?''',
-                           (values[0], values[0].casefold(), *values[1:], int(bool(active)), habit_id))
+                              days_mask=?,preferred_time=?,active=?,routine=?,anchor=?,
+                              minimum_target=?,ideal_target=?,duration_minutes=? WHERE id=?''',
+                           (values[0], values[0].casefold(), *values[1:], int(bool(active)),
+                            *routine_values, habit_id))
                 return self._habit(db, habit_id)
         except sqlite3.IntegrityError:
             raise ValueError('A habit with this name already exists.') from None
@@ -179,6 +239,41 @@ class HabitStore:
             return {dt.date.fromisoformat(row['day']): row['value'] for row in db.execute(
                 'SELECT day,value FROM habit_logs WHERE habit_id=? AND day>=? AND day<?',
                 (habit_id, start.isoformat(), end.isoformat()))}
+
+    def increment_progress(self, habit_id, day, amount):
+        """A quick-add is atomic and cannot overwrite another check-in."""
+        if isinstance(day, str):
+            try:
+                day = dt.date.fromisoformat(day)
+            except ValueError:
+                raise ValueError('Progress date is invalid.') from None
+        if not isinstance(day, dt.date):
+            raise ValueError('Progress date is invalid.')
+        amount = _number(amount, .1, 1_000_000, 'Increment')
+        with self.connection() as db:
+            habit = self._habit(db, habit_id)
+            if habit['kind'] == 'done':
+                amount = 1.0
+            cap = 1.0 if habit['kind'] == 'done' else 1_000_000
+            db.execute('''INSERT INTO habit_logs VALUES (?,?,?,?)
+                       ON CONFLICT(habit_id,day) DO UPDATE SET
+                       value=MIN(?,habit_logs.value+excluded.value),updated=excluded.updated''',
+                       (habit_id, day.isoformat(), min(cap, amount), time.time(), cap))
+            value = db.execute('SELECT value FROM habit_logs WHERE habit_id=? AND day=?',
+                               (habit_id, day.isoformat())).fetchone()['value']
+        return value
+
+    def today_routines(self, today=None):
+        """Small reusable view model for Today; goals are never calendar durations."""
+        today = today or dt.datetime.now(TZ).date()
+        groups = {name: [] for name in ROUTINES}
+        for habit in self.week(today)['habits']:
+            if not scheduled(habit, today) or today < habit['created_day']:
+                continue
+            value = habit['values'].get(today, 0)
+            groups[habit['routine']].append({**habit, 'value': value,
+                                           'level': progress_level(habit, value)})
+        return groups
 
     def week(self, today=None):
         today = today or dt.datetime.now(TZ).date()

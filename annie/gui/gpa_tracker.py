@@ -1,5 +1,6 @@
 """Course, component-grade and credit-weighted GPA workspace."""
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                             QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame,
                             QHBoxLayout, QHeaderView, QLineEdit, QListWidget,
@@ -7,7 +8,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                             QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from annie.gpa_tracker import GRADE_SCALE, GpaStore
-from annie.gui.design import label, role
+from annie.gui.design import TEXT, label, role
 
 
 def _metric(title):
@@ -66,11 +67,11 @@ class ComponentDialog(QDialog):
         self.weight.setValue(item['weight'] if item else 10)
         self.graded = QCheckBox('A score has been posted')
         self.graded.setChecked(bool(item and item['score'] is not None))
-        self.score = QDoubleSpinBox()
-        self.score.setRange(0, 100)
-        self.score.setDecimals(2)
-        self.score.setSuffix(' %')
-        self.score.setValue(item['score'] if item and item['score'] is not None else 0)
+        self.score = QLineEdit()
+        self.score.setPlaceholderText('85% or 17/20')
+        self.score.setText((item.get('score_input') or f"{item['score']:g}%")
+                           if item and item['score'] is not None else '')
+        self.score.setAccessibleName('Posted score as a percent or earned/possible points')
         self.score.setEnabled(self.graded.isChecked())
         self.graded.toggled.connect(self.score.setEnabled)
         form.addRow('Component', self.name)
@@ -87,10 +88,11 @@ class ComponentDialog(QDialog):
         layout.addWidget(buttons)
 
     def values(self):
-        return self.name.text(), self.weight.value(), self.score.value() if self.graded.isChecked() else None
+        return self.name.text(), self.weight.value(), self.score.text() if self.graded.isChecked() else None
 
 
 class GpaTrackerPage(QWidget):
+    changed = pyqtSignal()
     def __init__(self, parent=None, store=None):
         super().__init__(parent)
         self.store = store or GpaStore()
@@ -141,7 +143,7 @@ class GpaTrackerPage(QWidget):
         self.course_title = label('Choose a course', 'section')
         detail_layout.addWidget(self.course_title)
         course_stats = QHBoxLayout()
-        self.current_card, self.current_value = _metric('Current estimate')
+        self.current_card, self.current_value = _metric('Average on graded work')
         self.goal_card, self.goal_value = _metric('Target')
         self.need_card, self.need_value = _metric('Needed on remaining work')
         for card in (self.current_card, self.goal_card, self.need_card):
@@ -158,16 +160,36 @@ class GpaTrackerPage(QWidget):
         detail_layout.addLayout(component_header)
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(['Component', 'Weight', 'Score', 'Contribution'])
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed |
+                                   QAbstractItemView.SelectedClicked)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.doubleClicked.connect(self._edit_component)
+        self.table.itemChanged.connect(self._score_changed)
+        self.table.itemSelectionChanged.connect(self._selection_changed)
         self.table.verticalHeader().hide()
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         for column in range(1, 4):
             header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
         detail_layout.addWidget(self.table, 1)
+        hint = label('Edit a score in the table: 85%, 17/20, or leave blank for upcoming work. Enter saves it.')
+        hint.setWordWrap(True)
+        detail_layout.addWidget(hint)
+        what_if = QHBoxLayout()
+        what_if.addWidget(label('What if I average', 'muted'))
+        self.what_if_score = QDoubleSpinBox()
+        self.what_if_score.setRange(0, 100)
+        self.what_if_score.setSuffix(' %')
+        self.what_if_score.setValue(80)
+        self.what_if_score.setAccessibleName('Hypothetical average on all remaining course work')
+        self.what_if_score.valueChanged.connect(self._update_what_if)
+        what_if.addWidget(self.what_if_score)
+        what_if.addWidget(label('on remaining work?', 'muted'))
+        what_if.addStretch()
+        detail_layout.addLayout(what_if)
+        self.what_if_result = label('Choose a course to explore a scenario.')
+        self.what_if_result.setWordWrap(True)
+        detail_layout.addWidget(self.what_if_result)
         component_actions = QHBoxLayout()
         component_actions.addStretch()
         self.edit_component_button = QPushButton('Edit component')
@@ -228,9 +250,9 @@ class GpaTrackerPage(QWidget):
         course = self._selected_course()
         enabled = course is not None
         for widget in (self.edit_course_button, self.delete_course_button,
-                       self.add_component_button, self.edit_component_button,
-                       self.delete_component_button):
+                       self.add_component_button, self.what_if_score):
             widget.setEnabled(enabled)
+        self.table.blockSignals(True)
         self.table.setRowCount(0)
         if not course:
             self.course_title.setText('Choose a course')
@@ -238,6 +260,9 @@ class GpaTrackerPage(QWidget):
             self.goal_value.setText('—')
             self.need_value.setText('—')
             self.course_status.setText('Add a course to begin.')
+            self.table.blockSignals(False)
+            self._selection_changed()
+            self._update_what_if()
             return
         summary = self.store.summary(course['id'])
         self.course_title.setText(f"{course['name']} · {course['credits']:g} credits")
@@ -256,10 +281,10 @@ class GpaTrackerPage(QWidget):
         else:
             self.need_value.setText(f'{required:.1f}%')
         missing = 100 - summary['total_weight']
-        status = (f"Entered components: {summary['total_weight']:.1f}% · "
-                  f"graded so far: {summary['graded_weight']:.1f}%.")
+        status = (f"Earned {summary['earned_points']:.2f} / 100 course points · "
+                  f"{summary['graded_weight']:g}% of the course graded.")
         if missing > .001:
-            status += f' Add the remaining {missing:.1f}% when you know the course breakdown.'
+            status += f' Breakdown incomplete: {missing:g}% is not configured; remaining-average estimates include it.'
         if required is not None and required > 100:
             status += ' The selected target cannot be reached with the recorded scores.'
         self.course_status.setText(status)
@@ -270,12 +295,61 @@ class GpaTrackerPage(QWidget):
             if item['score'] is None:
                 score, contribution = 'Not graded', '—'
             else:
-                score = f"{item['score']:g}%"
+                score = item.get('score_input') or f"{item['score']:g}%"
                 contribution = f"{item['weight'] * item['score'] / 100:.2f} / {item['weight']:g}"
-            self.table.setItem(row, 2, QTableWidgetItem(score))
+            score_item = QTableWidgetItem(score)
+            score_item.setData(Qt.UserRole, item['id'])
+            score_item.setToolTip('Edit: percentage or earned/possible points. Blank clears a posted grade.')
+            self.table.setItem(row, 2, score_item)
             self.table.setItem(row, 3, QTableWidgetItem(contribution))
+            for column in (0, 1, 3):
+                cell = self.table.item(row, column)
+                cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
+            for column in range(4):
+                self.table.item(row, column).setForeground(QColor(TEXT))
+        self.table.blockSignals(False)
         if summary['items']:
             self.table.selectRow(0)
+        self._selection_changed()
+        self._update_what_if()
+
+    def _selection_changed(self):
+        enabled = self._selected_component() is not None
+        self.edit_component_button.setEnabled(enabled)
+        self.delete_component_button.setEnabled(enabled)
+
+    def _score_changed(self, item):
+        if item.column() != 2 or not item.data(Qt.UserRole):
+            return
+        course = self._selected_course()
+        if not course:
+            return
+        row = item.row()
+        error = None
+        try:
+            self.store.set_score(item.data(Qt.UserRole), item.text())
+            self.changed.emit()
+        except ValueError as exc:
+            error = str(exc)
+        self.reload(course['id'])
+        if row < self.table.rowCount():
+            self.table.setCurrentCell(row, 2)
+        if error:
+            self.course_status.setText(error + ' The previous score was kept.')
+
+    def _update_what_if(self, *_):
+        course = self._selected_course()
+        if not course:
+            self.what_if_result.setText('Choose a course to explore a scenario.')
+            return
+        result = self.store.what_if(course['id'], self.what_if_score.value())
+        if not result['remaining_weight']:
+            text = f"Course complete: {result['projected_percent']:.1f}% · {result['projected_letter']}."
+        else:
+            text = (f"Projected final: {result['projected_percent']:.1f}% · {result['projected_letter']} "
+                    f"({result['projected_gpa_points']:.2f} GPA points). "
+                    f"Assumes {result['remaining_score']:g}% across all remaining {result['remaining_weight']:g}%.")
+        self.what_if_result.setText(text + ' Scenario only; recorded grades stay unchanged.')
 
     def _show_error(self, error):
         QMessageBox.warning(self, 'Could not save', str(error))
@@ -286,6 +360,7 @@ class GpaTrackerPage(QWidget):
             try:
                 course = self.store.add_course(*dialog.values())
                 self.reload(course['id'])
+                self.changed.emit()
             except ValueError as exc:
                 self._show_error(exc)
 
@@ -298,6 +373,7 @@ class GpaTrackerPage(QWidget):
             try:
                 self.store.update_course(course['id'], *dialog.values())
                 self.reload(course['id'])
+                self.changed.emit()
             except ValueError as exc:
                 self._show_error(exc)
 
@@ -310,6 +386,7 @@ class GpaTrackerPage(QWidget):
         if answer == QMessageBox.Yes:
             self.store.delete_course(course['id'])
             self.reload()
+            self.changed.emit()
 
     def _add_component(self):
         course = self._selected_course()
@@ -320,6 +397,7 @@ class GpaTrackerPage(QWidget):
             try:
                 self.store.add_assessment(course['id'], *dialog.values())
                 self.reload(course['id'])
+                self.changed.emit()
             except ValueError as exc:
                 self._show_error(exc)
 
@@ -332,6 +410,7 @@ class GpaTrackerPage(QWidget):
             try:
                 self.store.update_assessment(item['id'], *dialog.values())
                 self.reload(course['id'])
+                self.changed.emit()
             except ValueError as exc:
                 self._show_error(exc)
 
@@ -344,3 +423,4 @@ class GpaTrackerPage(QWidget):
         if answer == QMessageBox.Yes:
             self.store.delete_assessment(item['id'])
             self.reload(course['id'])
+            self.changed.emit()
