@@ -89,6 +89,9 @@ def main():
             capture('routines', 7)
             window.resize(720, 820)
             capture('narrow-today', 9)
+            capture('narrow-review', 10)
+            capture('narrow-academics', 6)
+            capture('narrow-routines', 7)
             window._start_daily_study('CSCI 231')
             active = window.study_page.store.active()
             if not active or active['subject'] != 'CSCI 231' or active['sync_state'] != 'local':
@@ -99,7 +102,7 @@ def main():
         report = {'mode': 'offline fictional fixture, no model calls',
                   'verified_findings': 3, 'rejected_invented_quote': 1,
                   'approved_deadlines': 1, 'approved_study_tasks': 2,
-                  'today_starts_local_timer': True, 'screenshots': 5}
+                  'today_starts_local_timer': True, 'screenshots': 8}
         print(json.dumps(report, indent=2))
         from annie.secure_storage import atomic_write
         atomic_write(output / 'workflow-check.json', json.dumps(report, indent=2).encode())
