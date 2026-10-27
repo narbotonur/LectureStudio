@@ -114,6 +114,17 @@ SYSTEM_PROMPT = (
 
 # ── Settings persistence ──────────────────────────────────────
 
+def _load_protected_settings():
+    if not os.path.exists(SECRETS_FILE):
+        return
+    try:
+        values = read_secret(SECRETS_FILE)
+        for name in ('GEMINI_API_KEY', 'GROQ_API_KEY', 'WEATHER_API_KEY', 'ELEVENLABS_API_KEY', 'META_API_KEY'):
+            globals()[name] = values.get(name.lower(), '')
+    except Exception:
+        print('  [CONFIG] Protected credentials unavailable; open Accounts & Setup to reconnect.')
+
+
 def load_settings():
     """Load saved settings from JSON file (called once at startup)."""
     global GEMINI_API_KEY, WEATHER_API_KEY, WEATHER_CITY
@@ -127,6 +138,7 @@ def load_settings():
     global META_MODEL, TRANSCRIPTION_BACKEND, TRANSCRIPTION_LANGUAGE, AUTO_GENERATE_NOTES
 
     if not os.path.exists(SETTINGS_FILE):
+        _load_protected_settings()
         return
 
     try:
@@ -186,6 +198,9 @@ def load_settings():
         print("  [CONFIG] Settings loaded from annie_settings.json")
     except Exception as e:
         print(f"  [CONFIG] Could not load settings: {e}")
+    finally:
+        # The persistent transcription process must pick up key changes too.
+        _load_protected_settings()
 
 
 def save_settings():
@@ -233,10 +248,3 @@ def save_settings():
 
 # Load persisted settings immediately on import
 load_settings()
-if os.path.exists(SECRETS_FILE):
-    try:
-        for _name, _value in read_secret(SECRETS_FILE).items():
-            if _name.upper() in ('GEMINI_API_KEY', 'GROQ_API_KEY', 'WEATHER_API_KEY', 'ELEVENLABS_API_KEY', 'META_API_KEY'):
-                globals()[_name.upper()] = _value
-    except Exception:
-        print('  [CONFIG] Protected credentials unavailable; open Accounts & Setup to reconnect.')

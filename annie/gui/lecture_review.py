@@ -62,6 +62,7 @@ class LectureReviewPage(QWidget):
         intro.setWordWrap(True)
         layout.addWidget(intro)
         self.source_label = label('Record or import a timestamped lecture to begin.', 'muted')
+        self.source_label.setTextFormat(Qt.PlainText)
         self.source_label.setWordWrap(True)
         layout.addWidget(self.source_label)
         self.filter = QComboBox()

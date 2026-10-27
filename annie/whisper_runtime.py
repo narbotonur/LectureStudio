@@ -123,6 +123,31 @@ class ModelCache:
         return self.model, self.device, reused
 
 
+class DeferredLocalModel:
+    """Start saving the lecture before an optional download or cold model load."""
+    name = 'local'
+
+    def __init__(self, cache, model_name, emit):
+        self.cache, self.model_name, self.emit = cache, model_name, emit
+        self._model = None
+
+    def transcribe(self, *args, **kwargs):
+        if self._model is None:
+            from annie.whisper_models import preparation_status
+
+            def report(kind, **data):
+                if kind == 'status':
+                    data['text'] = data['text'].replace('audio capture has not started',
+                                                      'audio recording continues locally')
+                self.emit(kind, **data)
+
+            with preparation_status(self.model_name, report) as status:
+                self._model, device, reused = self.cache.get(self.model_name, report=status)
+            self.emit('status', text=f"Whisper ready [{device}] ({'reused' if reused else 'loaded'} {self.model_name})")
+            self.emit('metrics', backend='local', device=device, model_name=self.model_name)
+        return self._model.transcribe(*args, **kwargs)
+
+
 def capture_audio(device, stop, deliver):
     """Only acquisition; never model inference or disk writes in a callback."""
     device = str(device)
@@ -203,7 +228,8 @@ def transcribe_phrase(model, pcm, prompt, clean_text, emit, *, offset=0.0,
             phrases.append(part)
             start = min(duration, max(0.0, float(getattr(segment, 'start', 0))))
             end = min(duration, max(start, float(getattr(segment, 'end', duration))))
-            emit_segment(emit, offset + start, offset + end, part, source)
+            if end > start:
+                emit_segment(emit, offset + start, offset + end, part, source)
     text = ' '.join(phrases)
     if text:
         emit('transcript', text=text)
@@ -367,7 +393,8 @@ def file_session(options, model, stop, emit, clean_text):
             if not first_text:
                 first_text = True
                 emit('metrics', first_text_seconds=time.monotonic() - started)
-            emit_segment(emit, segment.start, segment.end, text, Path(path).name)
+            if segment.end > segment.start:
+                emit_segment(emit, segment.start, segment.end, text, Path(path).name)
             start = f'{int(segment.start // 60):02d}:{int(segment.start % 60):02d}'
             end = f'{int(segment.end // 60):02d}:{int(segment.end % 60):02d}'
             emit('transcript', text=f'[{start} → {end}] {text}\n')
@@ -440,11 +467,15 @@ def serve(clean_text, commands_input=None, cache=None):
                 except VoiceUnavailable as exc:
                     emit('warning', text=f'{exc} Using Local Whisper.')
             if model is None:
-                from annie.whisper_models import preparation_status
-                with preparation_status(name, emit) as report:
-                    model, device, reused = cache.get(name, report=report)
-                emit('status', text=f"Whisper ready [{device}] ({'reused' if reused else 'loaded'} {name})")
-                emit('metrics', backend='local', device=device, model_name=name)
+                if options.get('mode') != 'file':
+                    model = DeferredLocalModel(cache, name, emit)
+                    emit('status', text='Saving audio locally; Whisper will prepare in the background')
+                else:
+                    from annie.whisper_models import preparation_status
+                    with preparation_status(name, emit) as report:
+                        model, device, reused = cache.get(name, report=report)
+                    emit('status', text=f"Whisper ready [{device}] ({'reused' if reused else 'loaded'} {name})")
+                    emit('metrics', backend='local', device=device, model_name=name)
             if stop.is_set():
                 result['cancelled'] = True
                 continue

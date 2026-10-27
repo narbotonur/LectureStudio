@@ -49,6 +49,26 @@ class DailyPlanTests(unittest.TestCase):
         self.assertEqual(suggest_today(COURSES, settings={'weekday_max_minutes': 0}, now=NOW)[0], [])
         self.assertEqual(suggest_today(COURSES, now=NOW.replace(hour=23))[0], [])
 
+    def test_skip_carried_task_and_repeat_postpone_do_not_reappear(self):
+        for decision in ('skipped', 'tomorrow', 'done'):
+            with self.subTest(decision=decision), tempfile.TemporaryDirectory() as root:
+                store = DailyPlanStore(root)
+                store.decide(suggest_today(COURSES, now=NOW)[0][0], 'tomorrow')
+                next_day = NOW + dt.timedelta(days=1)
+                carried = suggest_today(COURSES, decisions=store.decisions(), now=next_day)[0][0]
+                store.decide(carried, decision)
+                self.assertEqual(suggest_today(COURSES, decisions=store.decisions(), now=next_day)[0], [])
+
+    def test_completed_time_counts_toward_daily_limit(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = DailyPlanStore(root)
+            item = suggest_today(COURSES, now=NOW)[0][0]
+            store.decide(item, 'done')
+            other = [{'name': 'CSCI', 'credits': 6, 'current_percent': 70, 'target_percent': 90}]
+            items, _ = suggest_today(other, settings={'weekday_max_minutes': 30},
+                                      decisions=store.decisions(), now=NOW)
+            self.assertEqual(items, [])
+
     def test_rejected_decision_is_not_reoffered_and_tasks_keep_evidence_link(self):
         task = {'id': 'action-1', 'summary': 'Review stack frames', 'course': 'CSCI 231', 'minutes': 20}
         item = suggest_today(tasks=[task], now=NOW)[0][0]

@@ -22,7 +22,9 @@ TESTS = ('test_audio_io.py', 'test_calendar_background.py', 'test_deadlines.py',
          'test_macos_port.py', 'test_macos_ui.py', 'test_meeting_prompt.py',
          'test_slide_analysis.py', 'test_studio_dock.py', 'test_studio_router.py',
          'test_study_guide.py', 'test_study_sessions.py', 'test_week_calendar.py', 'test_whisper_pipeline.py',
-         'test_whisper_models.py', 'test_prayer_widget.py', 'test_updates.py', 'test_update_download.py')
+         'test_whisper_models.py', 'test_prayer_widget.py', 'test_updates.py', 'test_update_download.py',
+         'test_daily_plan.py', 'test_lecture_actions.py', 'test_meta_client.py',
+         'test_transcription_backends.py', 'test_tracker_workflow.py', 'test_hackathon_integration.py')
 
 
 def stage_macos(destination):

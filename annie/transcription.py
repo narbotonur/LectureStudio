@@ -19,7 +19,7 @@ class TranscriptSegment:
     def create(cls, start, end, text, source, backend='local', speaker=''):
         start, end = float(start), float(end)
         text = str(text).strip()
-        if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end < start:
+        if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
             raise ValueError('Transcript timestamps must be finite and ordered.')
         if not text:
             raise ValueError('Transcript segment must contain text.')

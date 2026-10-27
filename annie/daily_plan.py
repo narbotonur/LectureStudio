@@ -35,14 +35,18 @@ class DailyPlanStore:
             raise ValueError('Unknown daily plan action.')
         target = day or dt.date.fromisoformat(item['day'])
         payload = dict(item)
+        origin = dict(item)
         if status == 'tomorrow':
             target += dt.timedelta(days=1)
             payload['start'] = payload['end'] = ''
             payload['day'] = target.isoformat()
+            payload['id'] = hashlib.sha256(f"{target}:{item['key']}".encode()).hexdigest()[:24]
         with self._connect() as db:
-            db.execute('INSERT INTO decisions VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET '
-                       'day=excluded.day,status=excluded.status,payload=excluded.payload',
-                       (item['id'], target.isoformat(), status, json.dumps(payload)))
+            query = ('INSERT INTO decisions VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET '
+                     'day=excluded.day,status=excluded.status,payload=excluded.payload')
+            if status == 'tomorrow':
+                db.execute(query, (item['id'], item['day'], 'skipped', json.dumps(origin)))
+            db.execute(query, (payload['id'], target.isoformat(), status, json.dumps(payload)))
 
     def decisions(self):
         with self._connect() as db:
@@ -111,7 +115,10 @@ def suggest_today(courses=(), deadlines=(), tasks=(), events=(), prayers=None,
                            'course': task.get('course', ''), 'minutes': task.get('minutes') or 30,
                            'reason': task.get('suggested_action') or 'Approved lecture action',
                            'action_id': task['id']})
+    specific_courses = {task.get('course', '').casefold() for task in tasks}
     for subject in sorted(_subjects(courses, deadlines, day), key=lambda s: -s['priority']):
+        if subject['name'].casefold() in specific_courses:
+            continue
         candidates.append({'key': f"course:{subject['name']}", 'title': f"Review {subject['name']}",
                            'course': subject['name'], 'minutes': 30,
                            'reason': (f"Prepare for {subject['deadline']}" if subject['deadline'] else
@@ -119,10 +126,13 @@ def suggest_today(courses=(), deadlines=(), tasks=(), events=(), prayers=None,
                            'action_id': ''})
     limit = settings['weekend_max_minutes'] if day.weekday() >= 5 else settings['weekday_max_minutes']
     allocated = sum(int(item['minutes']) for item in result)
+    allocated += sum(int(item['minutes']) for item in decisions.values()
+                     if item['day'] == day.isoformat() and item['status'] == 'done')
+    decided_keys = {item.get('key') for item in decisions.values() if item['day'] == day.isoformat()}
     warnings = []
     for candidate in candidates:
         identity = hashlib.sha256(f"{day}:{candidate['key']}".encode()).hexdigest()[:24]
-        if identity in decisions or any(item.get('key') == candidate['key'] for item in result):
+        if identity in decisions or candidate['key'] in decided_keys:
             continue
         if len(result) >= 3:
             break

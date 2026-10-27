@@ -19,6 +19,7 @@ class TodayPage(QWidget):
         self.events = []
         self.store = DailyPlanStore(root)
         self.root = root
+        self.clock = lambda: dt.datetime.now(TZ)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 6, 0)
         top = QHBoxLayout()
@@ -36,8 +37,10 @@ class TodayPage(QWidget):
             links.addWidget(button)
         layout.addLayout(links)
         scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidgetResizable(True)
         body = QWidget()
+        body.setObjectName('homeContent')
         self.body = QVBoxLayout(body)
         self.body.setSpacing(12)
         scroll.setWidget(body)
@@ -62,7 +65,7 @@ class TodayPage(QWidget):
             item = self.body.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        now = dt.datetime.now(TZ)
+        now = self.clock()
         self.date_label.setText(f'{now:%A, %d %B} · UTC+05')
         try:
             self._populate(now)
@@ -147,11 +150,16 @@ class TodayPage(QWidget):
             box.addLayout(buttons)
             self.body.addWidget(card)
         if not suggestions:
-            self.body.addWidget(self._text('Approve a lecture action in Review or add a course in Academics.', 'muted'))
+            self.body.addWidget(self._text('No additional study block fits today. Use Review to keep track of approved lecture actions.'
+                                          if actions.approved_tasks() or courses else
+                                          'Approve a lecture action in Review or add a course in Academics.', 'muted'))
         self.feedback.setText(' '.join(warnings) or 'Suggested times use your loaded calendar and cached prayer times. Accepted actions stay local.')
         if not prayers:
             self.feedback.setText(self.feedback.text() + ' Prayer times are not cached for today; check them before accepting a slot.')
         self.body.addWidget(self._text('Daily routines', 'section'))
+        manage = QPushButton('Manage routines')
+        manage.clicked.connect(lambda: self.navigate.emit(7))
+        self.body.addWidget(manage)
         routines = CompactRoutineWidget(store=HabitStore(root / 'habits.sqlite3'))
         self.body.addWidget(routines)
 

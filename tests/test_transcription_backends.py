@@ -10,10 +10,34 @@ import wave
 from annie.meta_voice import MetaVoiceBackend, VoiceTurns, VoiceUnavailable, transcribe_file
 from annie.recording_audio import DiskAudioSpool, UtteranceSegmenter
 from annie.transcription import TranscriptSegment
-from annie.whisper_runtime import record_session, transcribe_phrase
+from annie.whisper_runtime import DeferredLocalModel, record_session, transcribe_phrase
 
 
 class TranscriptContractTests(unittest.TestCase):
+    def test_cold_model_load_happens_after_audio_is_already_saved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'lecture.wav'
+            model = Mock()
+            model.transcribe.return_value = ([types.SimpleNamespace(text='Saved first.', start=0, end=.4)], None)
+            cache = Mock()
+
+            def load(*args, **kwargs):
+                self.assertGreater(path.stat().st_size, 44)
+                return model, 'CPU', False
+
+            cache.get.side_effect = load
+            def capture(device, stop, deliver):
+                for _ in range(8):
+                    deliver(b'\xe8\x03' * 1024)
+            events = []
+            emit = lambda kind, **data: events.append((kind, data))
+            deferred = DeferredLocalModel(cache, 'small', emit)
+            result = record_session({'recording_path': str(path), 'agc': False}, deferred,
+                                    threading.Event(), emit, str, capture=capture)
+            self.assertFalse(result['had_error'])
+            cache.get.assert_called_once()
+            self.assertTrue(any(k == 'transcript' for k, _ in events))
+
     def test_segment_identity_and_invalid_timing(self):
         a = TranscriptSegment.create(2, 3, ' hello ', 'lecture.wav')
         self.assertEqual(a, TranscriptSegment.create(2, 3, 'hello', 'lecture.wav'))

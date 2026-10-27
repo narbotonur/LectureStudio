@@ -34,6 +34,9 @@ QTableWidget {{ background: {SURFACE}; alternate-background-color: {RAISED}; bor
     color: {TEXT}; selection-color: {TEXT};
     border-radius: 10px; gridline-color: {BORDER}; selection-background-color: #35452B; }}
 QTableWidget::item {{ padding: 6px; }}
+QListWidget {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER};
+    border-radius: 10px; selection-background-color: #35452B; selection-color: {TEXT}; }}
+QListWidget::item {{ padding: 8px; }}
 QHeaderView::section {{ background: {RAISED}; color: {MUTED}; border: none; padding: 8px; }}
 QFrame[role="panel"], QFrame#notesPanel {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 14px; }}
 QFrame[role="navigation"] {{ background: {SURFACE}; border-radius: 12px; }}

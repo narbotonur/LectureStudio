@@ -29,8 +29,11 @@ def run(check_secrets=True):
     from annie.gui.meeting_window import MeetingWindow
     from annie.gui.studio_dock import StudioDock
     from annie.study_sessions import StudyStore
+    from annie.meta_voice import MetaVoiceBackend
+    from annie.meta_client import MetaClient
+    from websockets.sync.client import connect
 
-    check(not cfg.GEMINI_API_KEY and not cfg.GROQ_API_KEY, 'Fresh profile contains an API key')
+    check(not cfg.GEMINI_API_KEY and not cfg.GROQ_API_KEY and not cfg.META_API_KEY, 'Fresh profile contains an API key')
     check(not cfg.LIBCAL_EMAIL and not is_connected(), 'Fresh profile contains an account')
     if check_secrets:
         secret = Path(cfg.DATA_DIR) / 'diagnostic.dpapi'
@@ -67,7 +70,7 @@ def run(check_secrets=True):
     window.show()
     window._switch_tab(5)
     app.processEvents()
-    check(window.stack.count() == 9, 'Studio tab missing')
+    check(window.stack.count() == 11, 'Studio workspace missing')
     check(not window.study_page.store.history(), 'Fresh profile contains study history')
     window.close()
     dock = StudioDock()
@@ -75,7 +78,7 @@ def run(check_secrets=True):
     dock.hide_immediately()
     app.processEvents()
     print(json.dumps({'status': 'ok', 'checks': ['fresh-profile', 'calendar-discovery',
-          'Whisper-backend-imports', 'setup-window', 'nine-Studio-tabs', 'dock-assets'] + native_checks +
+          'Whisper-backend-imports', 'Meta-adapter-imports', 'setup-window', 'eleven-Studio-workspaces', 'dock-assets'] + native_checks +
           (['native-secret-storage'] if check_secrets else []),
           'skipped': [] if check_secrets else ['native-secret-storage (noninteractive build check)']}))
     return 0

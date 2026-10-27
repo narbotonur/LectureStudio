@@ -1,4 +1,17 @@
-# Lecture Studio 0.4.0
+# Lecture Studio 0.5.0 · local hackathon build
+
+- Today combines upcoming classes, approved study actions and daily routines.
+- Review finds lecture actions through Muse Spark and verifies quotes against timestamped segments before approval.
+- Optional Muse Voice transcription, with Local Whisper retained for offline use and unsupported languages.
+- Cold model preparation no longer postpones local audio capture; legacy automatic notes are opt-in.
+- Timestamped transcripts save locally and reopen through More.
+- Routines have minimum/normal/ideal goals and independent duration; GPA supports inline raw scores and what-if.
+
+The Meta adapters were verified with offline transport fixtures. This build still
+needs a configured Meta key and live account testing. Source, package, microphone
+and classroom validation are separate checks; see the hackathon work log.
+
+## Previous version: 0.4.0
 
 This release expands Lecture Studio from lecture capture into a complete,
 local-first study workspace.

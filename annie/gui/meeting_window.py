@@ -520,6 +520,8 @@ class MeetingWindow(QDialog):
         self._last_transcript = ""
         self._transcript_segments = []
         self._lecture_source_name = 'Current lecture'
+        self._lecture_date = None
+        self._archived_fingerprint = ''
         self._recording = False
         self._jobs = set()
         self._mini_dock = None
@@ -732,6 +734,7 @@ class MeetingWindow(QDialog):
         menu.addSeparator()
         menu.addAction("Open saved recordings", lambda: self._open_profile_folder('recordings'))
         menu.addAction("Open study materials", lambda: self._open_profile_folder('library'))
+        menu.addAction('Open saved transcript…', self._open_saved_transcript)
         menu.addAction("Accounts & Setup…", self._open_studio_setup)
         menu.addAction("Moodle calendar…", self._open_moodle_setup)
         menu.addAction("Deadline Inbox…", self._open_deadline_inbox)
@@ -962,7 +965,8 @@ class MeetingWindow(QDialog):
             self.today_page.reload()
         if index == 10:
             self.review_page.set_transcript(self._transcript_segments,
-                course=self.subject_input.text().strip(), source_name=self._lecture_source_name)
+                course=self.subject_input.text().strip(), source_name=self._lecture_source_name,
+                lecture_date=self._lecture_date)
         if index == 6:
             self.gpa_page.reload()
         self.gen_anki_btn.setVisible(index in (0, 1, 2))
@@ -1018,6 +1022,27 @@ class MeetingWindow(QDialog):
                 raise OSError('Windows or macOS could not open the folder.')
         except OSError as exc:
             QMessageBox.warning(self, 'Open folder', str(exc))
+
+    def _open_saved_transcript(self):
+        if self.worker and self.worker.isRunning():
+            self.operation_status.setText('Finish the current transcription before opening another lecture.')
+            return
+        from annie.paths import DATA_DIR
+        from annie.lecture_archive import load_transcript
+        path, _ = QFileDialog.getOpenFileName(self, 'Open saved transcript', str(DATA_DIR / 'transcripts'), 'Lecture transcript (*.json)')
+        if not path:
+            return
+        try:
+            data = load_transcript(path)
+            self._transcript_segments = data['segments']
+            self._lecture_source_name = data['source_name']
+            self._lecture_date = datetime.date.fromisoformat(data['lecture_date']) if data.get('lecture_date') else None
+            self.subject_input.setText(data.get('course', ''))
+            self.transcript_area.setPlainText('\n'.join(f"[{item['start']:.1f}s] {item['text']}" for item in self._transcript_segments))
+            self._last_transcript = self.transcript_area.toPlainText()
+            self._switch_tab(10)
+        except (ValueError, OSError) as exc:
+            self.operation_status.setText(str(exc))
 
     def _build_chat_tab(self) -> QWidget:
         box = QWidget()
@@ -1271,6 +1296,9 @@ class MeetingWindow(QDialog):
             self._last_transcript = ""
             self._transcript_segments = []
             self._lecture_source_name = f"Lecture {datetime.datetime.now():%Y-%m-%d %H:%M} · {uuid.uuid4().hex[:8]}"
+            from annie.planner import TZ
+            self._lecture_date = datetime.datetime.now(TZ).date()
+            self._archived_fingerprint = ''
             self.transcript_area.clear()
             self.notes_area.clear()
             self.flashcards_area.clear()
@@ -1315,6 +1343,8 @@ class MeetingWindow(QDialog):
         self._last_transcript = ""
         self._transcript_segments = []
         self._lecture_source_name = f"{os.path.basename(file_path)} · {uuid.uuid4().hex[:8]}"
+        self._lecture_date = None
+        self._archived_fingerprint = ''
         self.notes_area.clear()
         self.flashcards_area.clear()
 
@@ -1448,8 +1478,27 @@ class MeetingWindow(QDialog):
         self.record_btn.setEnabled(True)
         self._set_record_button_state('idle')
         self.review_page.set_transcript(self._transcript_segments,
-            course=self.subject_input.text().strip(), source_name=self._lecture_source_name)
+            course=self.subject_input.text().strip(), source_name=self._lecture_source_name,
+            lecture_date=self._lecture_date)
+        self._save_transcript_archive(complete=True)
         self._switch_tab(1)
+
+    def _save_transcript_archive(self, complete=False):
+        if not self._transcript_segments:
+            return
+        from annie.lecture_actions import transcript_fingerprint
+        from annie.lecture_archive import save_transcript
+        from annie.paths import DATA_DIR
+        try:
+            fingerprint = transcript_fingerprint(self._transcript_segments)
+            if fingerprint == self._archived_fingerprint:
+                return
+            archive = save_transcript(DATA_DIR, self._transcript_segments, self._lecture_source_name,
+                                      self.subject_input.text().strip(), complete, self._lecture_date)
+            self._archived_fingerprint = fingerprint
+            self.transcript_area.setToolTip(f'Saved transcript: {archive}')
+        except (ValueError, OSError) as exc:
+            self.operation_status.setText(f'Transcript could not be saved: {exc}')
 
     def _show_transcript_evidence(self, timestamp):
         action = self.review_page._current()
@@ -1629,6 +1678,7 @@ class MeetingWindow(QDialog):
             if job.isFinished():
                 self._jobs.discard(job)
                 if job is self.worker:
+                    self._save_transcript_archive()
                     self.record_btn.setEnabled(True)
                     self.record_btn.setText("Start recording")
                     self._set_record_button_state("idle")

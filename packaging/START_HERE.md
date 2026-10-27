@@ -9,9 +9,19 @@ Keep the _internal folder and worker executable beside LectureStudio.exe. Do not
 
 ## Your AI account
 
+For lecture actions, enter your Meta Model API key in More > Accounts & Setup.
+Analyze current lecture sends its timestamped transcript to Meta. Review the source
+quote and proposed interpretation, then approve deadlines or study actions locally.
+Optional Muse Voice sends audio to Meta; Local Whisper remains the default and is
+used for Russian/Kazakh language hints. Meta account access and credits are required.
+
 Get your own Gemini API key at https://aistudio.google.com/apikey and enter it in setup.
 Choose a Gemini model available to your account. Cloud AI sends the lecture text/images/materials you ask it to process to Google; your account's quotas and any charges apply.
-Local Whisper transcription runs on your PC. Its first use downloads the selected model from Hugging Face; allow time and disk space. CPU mode works without NVIDIA/CUDA. No microphone recording starts during setup or model download alone.
+Local Whisper transcription runs on your PC. Its first use downloads the selected model from Hugging Face; allow time and disk space. CPU mode works without NVIDIA/CUDA. Setup never records audio. After you explicitly start recording, audio is saved locally while the model prepares.
+
+Automatic legacy note generation is off by default. Create notes when needed from
+Lecture, or inspect the transcript and Review actions immediately. Saved transcripts
+reopen through More > Open saved transcript.
 
 ## Your Google Calendar
 

@@ -2,6 +2,35 @@
 
 Local-first desktop workspace for turning lectures into an organized study system.
 
+## Hackathon development branch
+
+The `meta-hackathon` branch adds a timestamped lecture-to-action workflow:
+transcript → verified source quotes → Review → approved local deadlines and study
+actions → Today. New work is measured against tag `pre-hackathon-baseline`
+(`f2fd428`); the original lecture recorder, trackers and calendar predate the event.
+
+- Today combines the loaded schedule, reviewable study suggestions and routines.
+- Review uses Muse Spark with a Meta Model API key supplied in More → Accounts & Setup.
+  Quote/timestamp checks establish where the text was transcribed; the user checks
+  ASR accuracy and the model's interpretation before approving.
+- Optional Muse Voice sends selected audio to Meta. Local Whisper remains the default
+  and fallback; Russian and Kazakh are not in Meta Voice's evaluated language list.
+- Recording saves audio while a cold local model prepares. Automatic legacy notes
+  are disabled by default, so a completed transcript is available immediately.
+  Timestamped transcripts are saved locally and reopen through More → Open saved transcript.
+- Routines support busy-day minimums, normal and ideal goals, separate durations,
+  context anchors and quick check-ins. Existing records migrate additively.
+- Academics accepts inline scores such as `17/20` or `85%` and has a what-if preview.
+
+Try the isolated fictional Review demo: `python tools/demo_lecture_actions.py`.
+Run the complete offline workflow and capture previews:
+`python tools/capture_hackathon.py`. These use fixed model responses and temporary
+profiles; they are not live Meta demonstrations.
+
+The daily delivery plan and work ownership are in [HACKATHON_WORK.md](docs/HACKATHON_WORK.md).
+See [transcription validation](docs/review_artifacts/TRANSCRIPTION.md) for the
+measured local fixture, diagnosed CUDA limitation and remaining live checks.
+
 Lecture Studio records and transcribes classes, turns raw material into notes and
 flashcards, and keeps planning, grades, habits, deadlines, and focused study time
 in one calm desktop app. It is a standalone project: the old voice assistant is
