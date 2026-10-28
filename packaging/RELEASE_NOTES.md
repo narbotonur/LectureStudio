@@ -1,4 +1,18 @@
-# Lecture Studio 0.6.0 · local deadline review build
+# Lecture Studio 0.7.0 · executable lectures preview
+
+- More → Executable lecture lab builds a bounded BFS experiment from timestamped lecture text.
+- Exact source quotes, interpreted claims and constructed example assumptions are shown for review before use.
+- Native graph controls edit edges, endpoints and weight mode; queue/discovery state can be stepped through.
+- BFS hop paths and Dijkstra minimum-cost paths are computed locally, with explicit equal-weight assumptions.
+- Prediction checks save the graph, mode and computed result; they do not claim topic mastery.
+- Saved labs reopen locally. Approved BFS study actions in Today open their own saved lecture context.
+- A real Muse Spark 1.3 request on authored English text produced a source-checked lab; no arbitrary model code is executed.
+
+The first template supports small BFS graphs only. Generated interpretation still
+needs human review; source quotes do not prove semantic correctness. The built-in
+example is explicitly authored/offline. Classroom learning efficacy is untested.
+
+## Previous version: 0.6.0
 
 - Review groups mentions of an assignment and proposes a source-backed deadline correction.
 - Earlier and later quotes, the previous date and the proposed date remain visible before confirmation.

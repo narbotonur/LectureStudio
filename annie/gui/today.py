@@ -13,6 +13,7 @@ from annie.planner import TZ
 class TodayPage(QWidget):
     navigate = pyqtSignal(int)
     study_requested = pyqtSignal(str)
+    lab_requested = pyqtSignal(str)
 
     def __init__(self, parent=None, root=None):
         super().__init__(parent)
@@ -155,6 +156,12 @@ class TodayPage(QWidget):
             buttons.addWidget(move)
             buttons.addWidget(skip)
             box.addLayout(buttons)
+            if item.get('action_id'):
+                import re
+                if re.search(r'\bbfs\b|breadth[ -]first', item['title'] + ' ' + item['reason'], re.I):
+                    lab = QPushButton('Open executable lab')
+                    lab.clicked.connect(lambda checked=False, identity=item['action_id']: self.lab_requested.emit(identity))
+                    box.addWidget(lab)
             self.body.addWidget(card)
         if not suggestions:
             self.body.addWidget(self._text('No additional study block fits today. Use Review to keep track of approved lecture actions.'

@@ -350,6 +350,22 @@ class ActionStore:
     def approved_tasks(self):
         return [item for item in self.list_actions('approved') if item['type'] != 'deadline' and not item['done']]
 
+    def study_context(self, identity):
+        """Read the immutable lecture behind an approved study action."""
+        with self.connection() as db:
+            row = db.execute('SELECT * FROM lecture_actions WHERE id=?', (identity,)).fetchone()
+            if row is None or row['status'] != 'approved':
+                raise ValueError('Approve this lecture action before opening its lab.')
+            action = self._item(row)
+            if action['type'] == 'deadline':
+                raise ValueError('Choose a study action, not a deadline.')
+            segments = json.loads(row['segments'])
+            if transcript_fingerprint(segments) != row['fingerprint']:
+                raise ValueError('This saved source changed. Analyze it again before creating a lab.')
+            return {'action_id': identity, 'course': row['course'],
+                    'source_name': row['source_name'], 'segments': segments,
+                    'fingerprint': row['fingerprint']}
+
     def mark_task_done(self, identity, done=True):
         with self.connection() as db:
             if not db.execute("UPDATE lecture_actions SET done=? WHERE id=? AND status='approved'",

@@ -70,7 +70,15 @@ def run(check_secrets=True):
     window.show()
     window._switch_tab(5)
     app.processEvents()
-    check(window.stack.count() == 11, 'Studio workspace missing')
+    check(window.stack.count() == 12, 'Studio workspace missing')
+    from annie.graph_lab import run_lab
+    experiment = run_lab({'nodes': ['A', 'B', 'C'], 'directed': True, 'start': 'A', 'target': 'C',
+        'edges': [{'source': 'A', 'target': 'C', 'weight': 10},
+                  {'source': 'A', 'target': 'B', 'weight': 1},
+                  {'source': 'B', 'target': 'C', 'weight': 1}]}, weighted=True)
+    check(experiment['bfs_cost'] == 10 and experiment['shortest_cost'] == 2,
+          'Executable lecture graph engine failed')
+    window._switch_tab(11)
     check(not window.study_page.store.history(), 'Fresh profile contains study history')
     window.close()
     dock = StudioDock()
@@ -78,7 +86,7 @@ def run(check_secrets=True):
     dock.hide_immediately()
     app.processEvents()
     print(json.dumps({'status': 'ok', 'checks': ['fresh-profile', 'calendar-discovery',
-          'Whisper-backend-imports', 'Meta-adapter-imports', 'setup-window', 'eleven-Studio-workspaces', 'dock-assets'] + native_checks +
+          'Whisper-backend-imports', 'Meta-adapter-imports', 'setup-window', 'twelve-Studio-workspaces', 'executable-graph-engine', 'dock-assets'] + native_checks +
           (['native-secret-storage'] if check_secrets else []),
           'skipped': [] if check_secrets else ['native-secret-storage (noninteractive build check)']}))
     return 0

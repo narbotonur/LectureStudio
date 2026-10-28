@@ -17,8 +17,8 @@ MODULES = ('__init__', 'paths', 'platform_support', 'macos_support', 'macos_audi
            'whisper_runtime', 'whisper_models', 'whisper_events', 'release_check',
            'prayer_times', 'prayer_startup', 'prayer_widget_main', 'desktop_pin',
            'transcription', 'meta_voice', 'meta_client', 'lecture_actions', 'lecture_archive', 'daily_plan',
-           'lecture_reconciliation', 'obligations')
-GUI = ('__init__', 'design', 'meeting_window', 'studio_dock', 'week_calendar', 'study_timer', 'gpa_tracker', 'habit_tracker', 'weekly_planner', 'studio_setup', 'moodle_setup', 'deadline_inbox', 'studio_updates', 'prayer_widget', 'prayer_card', 'today', 'lecture_review')
+           'lecture_reconciliation', 'obligations', 'graph_lab', 'executable_lectures')
+GUI = ('__init__', 'design', 'meeting_window', 'studio_dock', 'week_calendar', 'study_timer', 'gpa_tracker', 'habit_tracker', 'weekly_planner', 'studio_setup', 'moodle_setup', 'deadline_inbox', 'studio_updates', 'prayer_widget', 'prayer_card', 'today', 'lecture_review', 'lecture_lab')
 DENIED = ('token.json', 'credentials.json', 'annie_settings.json', 'study_sessions.sqlite3',
           'accounts.dpapi', 'calendar.dpapi', 'google-client.dpapi', 'moodle-calendar.dpapi', 'lecture_schedule_cache.json',
           'deadlines.json', 'weekly-plans.json', 'prayer-widget.json', 'prayer-times-cache.json')

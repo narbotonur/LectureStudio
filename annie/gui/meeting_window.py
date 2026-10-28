@@ -726,7 +726,8 @@ class MeetingWindow(QDialog):
         self.tools_btn = QPushButton("More")
         menu = QMenu(self.tools_btn)
         for title, index in [('Transcript', 1), ('Flashcards', 2), ('Study timer', 5),
-                             ('Daily routines', 7), ('Weekly plan · advanced', 8), ('Legacy assistant', 3)]:
+                             ('Executable lecture lab', 11), ('Daily routines', 7),
+                             ('Weekly plan · advanced', 8), ('Legacy assistant', 3)]:
             menu.addAction(title, lambda checked=False, i=index: self._switch_tab(i))
         menu.addSeparator()
         from annie.prayer_startup import launch as launch_prayer_widget
@@ -808,6 +809,11 @@ class MeetingWindow(QDialog):
         self.review_page.actions_changed.connect(self.today_page.reload)
         self.review_page.evidence_requested.connect(self._show_transcript_evidence)
         self.stack.addWidget(self.review_page)
+        from annie.gui.lecture_lab import LectureLabPage
+        self.lab_page = LectureLabPage(self)
+        self.lab_page.evidence_requested.connect(self._show_lab_evidence)
+        self.stack.addWidget(self.lab_page)
+        self.today_page.lab_requested.connect(self._open_study_lab)
 
         self.workspace_body = QBoxLayout(QBoxLayout.LeftToRight)
         self.workspace_body.setSpacing(12)
@@ -955,8 +961,8 @@ class MeetingWindow(QDialog):
         self._style_tab_btn(self.tab_gpa_btn, index == 6)
         self._style_tab_btn(self.tab_habits_btn, index == 7)
         self._style_tab_btn(self.tab_plan_btn, index == 8)
-        self.recording_panel.setVisible(index not in (5, 6, 7, 8, 9, 10))
-        self.bottom_panel.setVisible(index not in (5, 6, 7, 8, 9, 10))
+        self.recording_panel.setVisible(index not in (5, 6, 7, 8, 9, 10, 11))
+        self.bottom_panel.setVisible(index not in (5, 6, 7, 8, 9, 10, 11))
         if index == 7:
             self.habits_page.reload()
         if index == 8:
@@ -969,6 +975,10 @@ class MeetingWindow(QDialog):
                 lecture_date=self._lecture_date)
         if index == 6:
             self.gpa_page.reload()
+        if index == 11:
+            self.lab_page.set_study_action('')
+            self.lab_page.set_transcript(self._transcript_segments,
+                course=self.subject_input.text().strip(), source_name=self._lecture_source_name)
         self.gen_anki_btn.setVisible(index in (0, 1, 2))
         self.export_btn.setVisible(index in (0, 1, 2))
         if index == 4:
@@ -977,6 +987,32 @@ class MeetingWindow(QDialog):
     def _update_study_status(self, text):
         self.study_status_btn.setText(text)
         self.study_status_btn.setVisible(bool(text))
+
+    def _open_study_lab(self, action_id):
+        from annie.lecture_actions import ActionStore
+        try:
+            context = ActionStore().study_context(action_id)
+            self._switch_tab(11)
+            self.lab_page.set_transcript(context['segments'], context['course'], context['source_name'])
+            self.lab_page.set_study_action(action_id)
+            self.lab_page.status.setText('Source loaded from your approved study action. Generate a lab to review its assumptions.')
+        except (ValueError, OSError) as exc:
+            self.operation_status.setText(str(exc))
+
+    def _show_lab_evidence(self, timestamp):
+        from annie.lecture_actions import transcript_fingerprint
+        spec = self.lab_page.current_spec
+        if (not spec or not self._transcript_segments
+                or spec['fingerprint'] != transcript_fingerprint(self._transcript_segments)):
+            self.lab_page.status.setText('This lab has its own saved source. Its verified quote is shown in the lab; the active lecture is different.')
+            return
+        segment = next((s for s in self._transcript_segments if s['start'] <= timestamp <= s['end']), None)
+        self._switch_tab(1)
+        if segment:
+            cursor = self.transcript_area.document().find(segment['text'])
+            if not cursor.isNull():
+                self.transcript_area.setTextCursor(cursor)
+                self.transcript_area.ensureCursorVisible()
 
     def _start_daily_study(self, subject):
         try:
@@ -1694,7 +1730,8 @@ class MeetingWindow(QDialog):
                 self.updates_panel.service.is_running() or
                 self.updates_panel.downloads.is_running() or
                 self.timetable_view.has_running_job() or self.study_page.has_running_job() or
-                self.planner_page.has_running_job() or self.review_page.has_running_job())
+                self.planner_page.has_running_job() or self.review_page.has_running_job()
+                or self.lab_page.has_running_job())
 
     def stop_jobs(self):
         self.updates_panel.service.stop()
@@ -1704,6 +1741,7 @@ class MeetingWindow(QDialog):
         self.study_page.stop_background()
         self.planner_page.stop_background()
         self.review_page.stop_background()
+        self.lab_page.stop_background()
         if self._mini_dock is not None:
             self._mini_dock.hide_immediately()
         for job in list(self._jobs):

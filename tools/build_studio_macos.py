@@ -25,7 +25,9 @@ TESTS = ('test_audio_io.py', 'test_calendar_background.py', 'test_deadlines.py',
          'test_whisper_models.py', 'test_prayer_widget.py', 'test_updates.py', 'test_update_download.py',
          'test_daily_plan.py', 'test_lecture_actions.py', 'test_meta_client.py',
          'test_transcription_backends.py', 'test_tracker_workflow.py', 'test_hackathon_integration.py',
-         'test_lecture_reconciliation.py', 'test_obligations.py', 'test_lecture_review_ui.py')
+         'test_lecture_reconciliation.py', 'test_obligations.py', 'test_lecture_review_ui.py',
+         'test_graph_lab.py', 'test_executable_lectures.py', 'test_lecture_lab_ui.py',
+         'test_executable_integration.py')
 
 
 def stage_macos(destination):
