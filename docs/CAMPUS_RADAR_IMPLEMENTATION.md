@@ -35,11 +35,16 @@ the lecture. Gmail opportunities and exam catch-up remain subsequent work.
   unknown due timestamps. Personal identifiers and captures stay in the private
   application profile; repository tests use synthetic coursework.
 - Native rendered UI was inspected with the real source and open homework first.
+- The real browser alarm completed a second capture at 21:45 UTC+05 without
+  pressing Check now: two snapshots, six items and still six observation events.
+  The persistent notification ledger acknowledged the six baseline events as
+  one summary request after Windows tray messages were explicitly enabled by
+  the owner. The alert's rendered appearance was not visually confirmed.
 - 440 Python tests passed in an isolated profile; the frozen Windows self-test
   passed including protected storage and all 13 workspaces. An earlier repeat
   exposed an intermittent pre-existing macOS helper stdin-close error on Windows;
   its focused rerun and the final full run passed. This is not macOS device proof.
-- Offline Node tests cover date/link parsing, server container acquisition,
+- Twelve offline Node tests cover date/link parsing, server container acquisition,
   failure/partial capture, adjacent HTML nodes, stale tab fallback and stop races.
 - No assignment was submitted, edited or marked complete. No course metadata is
   sent to an AI provider. No Gmail account was read or connected.
