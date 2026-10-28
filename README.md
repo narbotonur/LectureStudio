@@ -4,6 +4,11 @@ Local-first desktop workspace for turning lectures into an organized study syste
 
 ## Hackathon development branch
 
+**Release:** [v0.8.0 — Windows app and Chrome adapter](https://github.com/narbotonur/LectureStudio/releases/tag/v0.8.0).
+For the new-work disclosure, reproducible demo and submission copy, start with the
+[hackathon reviewer guide](docs/HACKATHON_SUBMISSION.md). Use source tag `v0.8.0`
+to reproduce this release; `main` can still point to the pre-hackathon baseline.
+
 The `meta-hackathon` branch adds a timestamped lecture-to-action workflow:
 transcript → verified source quotes → Review → approved local deadlines and study
 actions → Today. New work is measured against tag `pre-hackathon-baseline`

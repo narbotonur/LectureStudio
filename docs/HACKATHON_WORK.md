@@ -5,6 +5,35 @@ Tag: `pre-hackathon-baseline`. Integration branch: `meta-hackathon`.
 All features in that baseline are pre-existing, including the original recording,
 notes, calendar, GPA, habits, weekly planner and packaging.
 
+## Release candidate status — October 28, 0.8.0
+
+Current reviewer instructions and submission copy are in
+[`HACKATHON_SUBMISSION.md`](HACKATHON_SUBMISSION.md). Campus Radar now has a verified
+real course capture and a second automatic browser-alarm check; see
+[`CAMPUS_RADAR_IMPLEMENTATION.md`](CAMPUS_RADAR_IMPLEMENTATION.md). Final source
+validation: 440 Python tests and 12 offline Node tests; the Windows frozen build
+passed its clean-profile self-test. The current Windows artifact is
+`LectureStudio-Windows-x64-20261028-213139.zip`.
+
+The dates, work assignments and verification entries below are a historical work
+log. Superseded plans do not describe pending work in the current release.
+The three-minute submission video and the final CV submission remain outstanding.
+
+## Strategy update after discussion on October 27
+
+The owner confirmed the main pain is missing assignments, deadlines or changed
+requirements, and has about one hour per day for validation/demo work.
+The selected next direction is evidence-backed deadline reconciliation with
+explicit approval, rather than expanding the trackers. The historical local
+strategy/contracts drafts are superseded for reviewers by
+[`HACKATHON_SUBMISSION.md`](HACKATHON_SUBMISSION.md).
+The reconciliation and durable outbox slice has since been implemented in 0.6.0;
+see [`DEADLINE_WORKFLOW.md`](DEADLINE_WORKFLOW.md). A multi-step tool loop remains
+unimplemented; the shipped analysis uses one structured request. These priorities
+supersede the earlier feature-first milestones below. Existing completed
+work and verification records remain historical evidence, not claims about the
+new proposed implementation.
+
 ## Work ownership
 
 | Workstream | Branch | Ownership |
@@ -75,9 +104,48 @@ The final work log records completed changes and outstanding live checks.
 
 ## Still required before submission
 
-- Configure a Meta key in More → Accounts & Setup (the owner confirmed it has not been issued yet).
-  Confirm model access and credits in the account, then run a selected non-private
-  sample against both adapters. No authenticated Meta call has been claimed.
+### Executable Lectures slice on October 28
+
+- Implemented the approved bounded BFS lab in the existing English desktop UI;
+  source review, graph edits, local step execution and persisted predictions.
+- Real Muse Spark 1.3 generated a checked lab from authored English input.
+- Full source suite: 395 tests passed. The graph suite includes an independent
+  exhaustive-path oracle on 120 small fixed-seed graphs.
+- Actual native captures at 720/1180 inspected; capture uses a replay, not a new
+  model call. See [`EXECUTABLE_LECTURES.md`](EXECUTABLE_LECTURES.md).
+- General topics, arbitrary generated programs, real classroom learning efficacy
+  and slide/board extraction remain outside this first template.
+- Windows 0.7.0 and relocated copy passed frozen self-tests including a computed
+  graph counterexample. Final ZIP CRC verified. Runnable:
+  `releases/LectureStudio-0.7.0-local/LectureStudio.exe`.
+  ZIP: `LectureStudio-Windows-x64-20261028-161210.zip`.
+  SHA-256: `e5384955fc24c4bb8adde4dcba6edf6dafbfdce14c638cb4d4fb3b995b59fbf9`.
+
+### Delivered in the subsequent 0.6.0 work
+
+- Configured account successfully called Muse Spark 1.3; the live fictional
+  correction preserved two confirmed versions and one active Inbox deadline.
+- Native Review displays both quotes and requires explicit date/assignment
+  confirmation. Today exposes pending findings and suggests work on confirmed
+  deadlines even without GPA setup.
+- SQLite versions and a durable, idempotent Inbox outbox protect retries and
+  stale revisions. Matching unlinked legacy deadlines are blocked safely;
+  a legacy linking/migration interface is still required for that case.
+- Final source suite: 346 tests passed. Native screenshots at 720/1180 inspected.
+- Frozen development evaluation: 10/12 authored text cases passed, with two missed
+  candidates recorded unchanged. This is not classroom or held-out validation.
+- Windows 0.6.0 and relocated self-test passed. Runnable app:
+  `releases/LectureStudio-0.6.0-local/LectureStudio.exe`.
+  Final ZIP: `LectureStudio-Windows-x64-20261027-234454.zip`.
+  SHA-256: `8b74a4a4902b1c1e4edc6bfbe9372a250f9521c1fc51955e74007d6daf3e7413`.
+- No public upload, repository push or submission. See `DEADLINE_WORKFLOW.md`
+  and `DEMO_HACKATHON.md` for the implemented behavior and three-minute storyboard.
+
+### Remaining validation
+
+- Meta Spark access is now confirmed with the owner's configured account and
+  fictional English inputs. The $150 credit balance and optional Meta Voice
+  access remain unverified; do not infer them from the Spark request.
 - Compare real lecture accents/noise and English/Russian/Kazakh quality on material
   the owner permits to process. Test a full class and cloud interruption/rotation.
 - Validate real microphone capture and full-class behavior. The Windows file-input
@@ -86,6 +154,15 @@ The final work log records completed changes and outstanding live checks.
   release publication and hackathon submission were not performed in this run.
 
 ## Optional follow-up features
+
+UI/UX research and OYSAN-derived visual direction were explored in local design
+drafts and an offline interactive concept, rather than shipped as a web redesign.
+This is a design proposal, not an implemented native redesign. It includes
+screen priorities, daily acceptance milestones and account-access states from
+the organizer FAQ supplied by the owner.
+Owner clarification: retain English UI and Lecture Studio's desktop structure.
+Borrow only visual styling from OYSAN (colors, typography, spacing and control
+appearance), not its website layout or navigation behavior.
 
 Bulk syllabus-to-grade-component import, richer calendar rescheduling, SAM diagram
 extraction and an open-weight deployment remain outside this implementation. They
