@@ -13,6 +13,7 @@ venv/
 *.mp4
 *.log
 *.json
+!browser/campus-radar/manifest.json
 *.lock
 recordings/
 models/

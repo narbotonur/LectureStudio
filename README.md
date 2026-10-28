@@ -10,6 +10,12 @@ actions → Today. New work is measured against tag `pre-hackathon-baseline`
 (`f2fd428`); the original lecture recorder, trackers and calendar predate the event.
 
 - Today combines the loaded schedule, reviewable study suggestions and routines.
+- Campus Radar watches selected NU WeBWorK courses through an optional local Chrome
+  extension, records source-backed assignment changes and requests Windows alerts.
+  Keep Chrome, a signed-in course tab and the explicitly enabled desktop receiver
+  running. See [setup and boundaries](browser/campus-radar/README.md) and
+  [implementation evidence](docs/CAMPUS_RADAR_IMPLEMENTATION.md). Gmail and advance
+  deadline reminders are not connected yet.
 - Review uses Muse Spark with a Meta Model API key supplied in More → Accounts & Setup.
   Quote/timestamp checks establish where the text was transcribed; the user checks
   ASR accuracy and the model's interpretation before approving.

@@ -726,7 +726,7 @@ class MeetingWindow(QDialog):
         self.tools_btn = QPushButton("More")
         menu = QMenu(self.tools_btn)
         for title, index in [('Transcript', 1), ('Flashcards', 2), ('Study timer', 5),
-                             ('Executable lecture lab', 11), ('Daily routines', 7),
+                             ('Campus Radar', 12), ('Executable lecture lab', 11), ('Daily routines', 7),
                              ('Weekly plan · advanced', 8), ('Legacy assistant', 3)]:
             menu.addAction(title, lambda checked=False, i=index: self._switch_tab(i))
         menu.addSeparator()
@@ -814,6 +814,10 @@ class MeetingWindow(QDialog):
         self.lab_page.evidence_requested.connect(self._show_lab_evidence)
         self.stack.addWidget(self.lab_page)
         self.today_page.lab_requested.connect(self._open_study_lab)
+        from annie.gui.campus_radar import RadarPage
+        self.radar_page = RadarPage(self)
+        self.radar_page.changes_updated.connect(self.today_page.reload)
+        self.stack.addWidget(self.radar_page)
 
         self.workspace_body = QBoxLayout(QBoxLayout.LeftToRight)
         self.workspace_body.setSpacing(12)
@@ -961,8 +965,10 @@ class MeetingWindow(QDialog):
         self._style_tab_btn(self.tab_gpa_btn, index == 6)
         self._style_tab_btn(self.tab_habits_btn, index == 7)
         self._style_tab_btn(self.tab_plan_btn, index == 8)
-        self.recording_panel.setVisible(index not in (5, 6, 7, 8, 9, 10, 11))
-        self.bottom_panel.setVisible(index not in (5, 6, 7, 8, 9, 10, 11))
+        self.recording_panel.setVisible(index not in (5, 6, 7, 8, 9, 10, 11, 12))
+        self.bottom_panel.setVisible(index not in (5, 6, 7, 8, 9, 10, 11, 12))
+        if index == 12:
+            self.radar_page.reload()
         if index == 7:
             self.habits_page.reload()
         if index == 8:
@@ -1755,6 +1761,7 @@ class MeetingWindow(QDialog):
         self.meeting_state_changed.emit(False)
 
     def closeEvent(self, event):
+        self.radar_page.stop_receiver()
         self.stop_jobs()
         if sys.platform == 'darwin' and not self.testAttribute(Qt.WA_DontShowOnScreen):
             from annie.macos_support import set_accessory_mode

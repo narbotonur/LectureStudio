@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Lecture Studio Campus Radar",
+  "version": "0.1.0",
+  "description": "Watch explicitly selected NU WeBWorK courses and send assignment metadata to Lecture Studio on this computer.",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["https://webwork-new.nu.edu.kz/*", "http://127.0.0.1/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_popup": "popup.html"},
+  "content_scripts": [{"matches": ["https://webwork-new.nu.edu.kz/webwork2/*"], "js": ["core.js", "content.js"]}]
+}

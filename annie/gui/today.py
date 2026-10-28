@@ -84,6 +84,12 @@ class TodayPage(QWidget):
         from annie.planner import PlannerStore, _event_interval
         from annie.paths import DATA_DIR
         root = Path(self.root or DATA_DIR)
+        from annie.campus_radar import RadarStore
+        radar = RadarStore(root)
+        unread = len(radar.events(unread_only=True))
+        radar_button = QPushButton(f'Campus Radar · {unread} unreviewed change(s)' if unread else 'Campus Radar · check source coverage')
+        radar_button.clicked.connect(lambda: self.navigate.emit(12))
+        self.body.addWidget(radar_button)
         obligations = ObligationStore(root)
         pending_count = len(obligations.list_proposals('pending')) + len(ActionStore(root).list_actions('pending'))
         if pending_count:

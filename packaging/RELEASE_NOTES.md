@@ -1,4 +1,18 @@
-# Lecture Studio 0.7.0 · executable lectures preview
+# Lecture Studio 0.8.0 · Campus Radar preview
+
+- More → Campus Radar reviews observed coursework changes and source freshness; Today links to unreviewed changes.
+- An optional local Chrome extension checks explicitly watched NU WeBWorK courses using a signed-in course tab, about every five minutes while Chrome runs.
+- An authenticated receiver binds only to 127.0.0.1:8768, starts explicitly, and keeps pairing protected with DPAPI / Keychain.
+- Initial assignment observations produce one baseline summary per course. Later new observations and changed due/closing/status fields request Windows notifications with persistent deduplication.
+- Due dates and closing times remain distinct; missing cards, login errors, unsupported formats and partial captures never imply assignment completion or a clean check.
+
+This adapter supports the English NU course index and regular assignments. Chrome,
+a signed-in course tab, and the enabled desktop receiver must remain running.
+Windows may suppress notifications. Advance deadline reminders, Gmail and exam
+catch-up are not connected in this preview. Extension installation is a separate
+explicit action; it is not installed by launching Studio.
+
+## Previous version: 0.7.0 · executable lectures preview
 
 - More → Executable lecture lab builds a bounded BFS experiment from timestamped lecture text.
 - Exact source quotes, interpreted claims and constructed example assumptions are shown for review before use.

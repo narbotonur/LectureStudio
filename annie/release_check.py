@@ -70,7 +70,7 @@ def run(check_secrets=True):
     window.show()
     window._switch_tab(5)
     app.processEvents()
-    check(window.stack.count() == 12, 'Studio workspace missing')
+    check(window.stack.count() == 13, 'Studio workspace missing')
     from annie.graph_lab import run_lab
     experiment = run_lab({'nodes': ['A', 'B', 'C'], 'directed': True, 'start': 'A', 'target': 'C',
         'edges': [{'source': 'A', 'target': 'C', 'weight': 10},
@@ -86,7 +86,7 @@ def run(check_secrets=True):
     dock.hide_immediately()
     app.processEvents()
     print(json.dumps({'status': 'ok', 'checks': ['fresh-profile', 'calendar-discovery',
-          'Whisper-backend-imports', 'Meta-adapter-imports', 'setup-window', 'twelve-Studio-workspaces', 'executable-graph-engine', 'dock-assets'] + native_checks +
+          'Whisper-backend-imports', 'Meta-adapter-imports', 'setup-window', 'thirteen-Studio-workspaces', 'executable-graph-engine', 'dock-assets'] + native_checks +
           (['native-secret-storage'] if check_secrets else []),
           'skipped': [] if check_secrets else ['native-secret-storage (noninteractive build check)']}))
     return 0

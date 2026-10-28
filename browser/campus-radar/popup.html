@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Campus Radar</title>
+<link rel="stylesheet" href="popup.css"><body><h1>Campus Radar</h1>
+<p>NU WeBWorK only. Keep a signed-in course tab and Lecture Studio open. Checks run about every 5 minutes while Chrome is running.</p>
+<label>Pairing code from Lecture Studio<input id="token" type="password" autocomplete="off" maxlength="43"></label>
+<button id="watch">Watch this course</button><button id="check">Check now</button>
+<h2>Watched courses</h2><ul id="courses"></ul><button id="stop">Stop all watching</button>
+<p id="status" role="status"></p><p id="next"></p><p>Only assignment titles, source links, explicit dates and availability are sent to this computer. No grades, answers, cookies or passwords are exported. Gmail is not connected.</p>
+<script src="core.js"></script><script src="popup.js"></script></body></html>
