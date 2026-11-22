@@ -4,6 +4,9 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sqlite3
+import uuid
+from contextlib import closing
 
 from annie.secure_storage import atomic_write
 
@@ -80,12 +83,21 @@ class PlannerStore:
         blocks = data['weeks'].get(monday.isoformat(), {}).get('blocks', [])
         return self._validated_blocks(blocks, monday)
 
-    def save_week(self, monday, blocks, generated_at=None):
+    def fixed_events(self, monday):
+        week = self._data()['weeks'].get(monday.isoformat(), {})
+        return list(week.get('calendar_events', ()))
+
+    def save_week(self, monday, blocks, generated_at=None, *, calendar_events=None):
         data = self._data()
         blocks = self._validated_blocks(blocks, monday)
+        previous = data['weeks'].get(monday.isoformat(), {})
         data['weeks'][monday.isoformat()] = {
             'generated_at': (generated_at or dt.datetime.now(dt.timezone.utc)).isoformat(),
             'blocks': blocks,
+            'calendar_events': (previous.get('calendar_events', []) if calendar_events is None
+                                else [_snapshot_event(event) for event in calendar_events
+                                      if event.get('status') != 'cancelled'
+                                      and 'start' in event and 'end' in event]),
         }
         # Keep the profile small while preserving nearby plans.
         for key in sorted(data['weeks'])[:-12]:
@@ -117,6 +129,54 @@ class PlannerStore:
 
     def _write(self, data):
         atomic_write(self.path, json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8'))
+
+
+def _snapshot_event(event):
+    keys = ('id', 'summary', 'location', 'start', 'end', 'status', 'annie_source')
+    return {key: event[key] for key in keys if key in event}
+
+
+class LocalCalendarStore:
+    def __init__(self, root=None):
+        if root is None:
+            from annie.paths import DATA_DIR
+            root = DATA_DIR
+        self.path = Path(root) / 'local-calendar.sqlite3'
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('CREATE TABLE IF NOT EXISTS classes ('
+                       'id TEXT PRIMARY KEY,title TEXT NOT NULL,location TEXT NOT NULL,'
+                       'start TEXT NOT NULL,end TEXT NOT NULL)')
+
+    def events(self, monday):
+        first = dt.datetime.combine(monday, dt.time(), TZ)
+        last = first + dt.timedelta(days=7)
+        with closing(sqlite3.connect(self.path)) as db:
+            rows = db.execute('SELECT id,title,location,start,end FROM classes WHERE end>? AND start<? '
+                              'ORDER BY start,id', (first.isoformat(), last.isoformat())).fetchall()
+        return [{'id': identity, 'summary': title, 'location': room, 'annie_source': 'local',
+                 'start': {'dateTime': start}, 'end': {'dateTime': end}}
+                for identity, title, room, start, end in rows]
+
+    def save(self, *, title, location, start, end, identity=None):
+        title, location = title.strip(), location.strip()
+        if not title or len(title) > 200 or len(location) > 200:
+            raise ValueError('Enter a class title and an optional location up to 200 characters.')
+        if start.utcoffset() is None or end.utcoffset() is None or end <= start:
+            raise ValueError('The class must end after it starts.')
+        start, end = start.astimezone(TZ).isoformat(), end.astimezone(TZ).isoformat()
+        with closing(sqlite3.connect(self.path)) as db, db:
+            if identity is None:
+                identity = f'local-{uuid.uuid4().hex}'
+                db.execute('INSERT INTO classes VALUES (?,?,?,?,?)', (identity, title, location, start, end))
+            elif not db.execute('UPDATE classes SET title=?,location=?,start=?,end=? WHERE id=?',
+                                (title, location, start, end, identity)).rowcount:
+                raise ValueError('This class was removed. Refresh the calendar.')
+        return identity
+
+    def delete(self, identity):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('DELETE FROM classes WHERE id=?', (identity,))
 
 
 def _event_interval(event):
@@ -158,16 +218,18 @@ def blocks_as_events(blocks):
              'location': colors.get(item['kind'], '')} for item in blocks]
 
 
-def _free_slot(day, minutes, settings, occupied, now):
+def _free_slot(day, minutes, settings, occupied, now, *, due_at=None):
     start_limit = _clock(settings['day_start'])
     end_limit = _clock(settings['day_end'])
+    midnight = dt.datetime.combine(day, dt.time(), TZ)
+    if due_at is not None:
+        end_limit = min(end_limit, math.floor((due_at - midnight).total_seconds() / 60))
     preferred = max(start_limit, min(end_limit, _clock(settings['preferred_study'])))
     if day == now.date():
         current = now.hour * 60 + now.minute
         start_limit = max(start_limit, int(math.ceil((current + 10) / 10) * 10))
     candidates = list(range(max(start_limit, preferred), end_limit - minutes + 1, 10))
     candidates += list(range(start_limit, min(preferred, end_limit - minutes + 1), 10))
-    midnight = dt.datetime.combine(day, dt.time(), TZ)
     for minute in candidates:
         start = midnight + dt.timedelta(minutes=minute)
         end = start + dt.timedelta(minutes=minutes)
@@ -176,16 +238,18 @@ def _free_slot(day, minutes, settings, occupied, now):
     return None
 
 
-def _deadline_date(item):
+def _deadline_time(item):
     try:
-        return dt.datetime.fromisoformat(item['due_at']).astimezone(TZ).date()
+        due = dt.datetime.fromisoformat(item['due_at'])
+        return due.astimezone(TZ) if due.utcoffset() is not None else None
     except (KeyError, TypeError, ValueError):
         return None
 
 
 def _subjects(courses, deadlines, monday):
     open_deadlines = [item for item in deadlines if item.get('status', 'open') == 'open'
-                      and _deadline_date(item)]
+                      and _deadline_time(item)]
+    open_deadlines.sort(key=_deadline_time)
     result = []
     known = set()
     for course in courses:
@@ -195,25 +259,28 @@ def _subjects(courses, deadlines, monday):
         matching = [item for item in open_deadlines
                     if item.get('course', '').casefold() == course['name'].casefold()
                     or course['name'].casefold() in item.get('title', '').casefold()]
-        due = min((_deadline_date(item) for item in matching), default=None)
-        if due:
-            distance = (due - monday).days
+        deadline = matching[0] if matching else None
+        due_time = _deadline_time(deadline) if deadline else None
+        if due_time:
+            distance = (due_time.date() - monday).days
             priority += 8 if distance <= 2 else 5 if distance <= 7 else 2 if distance <= 14 else 0
-        result.append({'name': course['name'], 'priority': priority, 'due': due,
-                       'deadline': matching[0]['title'] if matching else '', 'allocated': 0})
+        result.append({'name': course['name'], 'priority': priority,
+                       'due': due_time.date() if due_time else None, 'due_at': due_time,
+                       'deadline': deadline['title'] if deadline else '', 'allocated': 0})
         known.add(course['name'].casefold())
     for item in open_deadlines:
         name = ' '.join(item.get('course', '').split())
         if not name or name.casefold() in known:
             continue
-        result.append({'name': name, 'priority': 8, 'due': _deadline_date(item),
+        due_time = _deadline_time(item)
+        result.append({'name': name, 'priority': 8, 'due': due_time.date(), 'due_at': due_time,
                        'deadline': item.get('title', ''), 'allocated': 0})
         known.add(name.casefold())
     return result
 
 
 def generate_week(monday, settings, calendar_events=(), prayer_days=None,
-                  habits=(), courses=(), deadlines=(), now=None):
+                  habits=(), courses=(), deadlines=(), now=None, *, pinned=()):
     settings = validate_settings(settings)
     now = now or dt.datetime.now(TZ)
     now = now.replace(tzinfo=TZ) if now.tzinfo is None else now.astimezone(TZ)
@@ -231,6 +298,18 @@ def generate_week(monday, settings, calendar_events=(), prayer_days=None,
             if start < right and end > left:
                 occupied[day].append((max(start, left), min(end, right)))
     blocks, warnings = [], []
+    study_by_day = {day: 0 for day in days}
+    for block in pinned:
+        start = dt.datetime.fromisoformat(block['start']).astimezone(TZ)
+        end = dt.datetime.fromisoformat(block['end']).astimezone(TZ)
+        day = start.date()
+        if day not in occupied:
+            continue
+        if _overlaps(start, end, occupied[day]):
+            warnings.append(f"Pinned block overlaps a fixed event: {block['title']} ({day:%a}).")
+        occupied[day].append((start, end))
+        study_by_day[day] += round((end - start).total_seconds() / 60)
+        blocks.append(dict(block))
     day_start, day_end = _clock(settings['day_start']), _clock(settings['day_end'])
 
     # Prayer and Jumuah are fixed constraints and visible in the resulting plan.
@@ -266,10 +345,11 @@ def generate_week(monday, settings, calendar_events=(), prayer_days=None,
                                  'Protected time including the configured travel window.'))
 
     # Scheduled habits get their preferred time first; otherwise the first free slot.
+    from annie.habits import schedule_for, scheduled
     for habit in habits:
         created = dt.datetime.fromtimestamp(habit['created'], TZ).date()
         for day in days:
-            if day < max(created, now.date()) or not (habit['days_mask'] & (1 << day.weekday())):
+            if day < max(created, now.date()) or not scheduled(habit, day):
                 continue
             duration = (min(120, max(1, round(habit['duration_minutes'])))
                         if habit.get('duration_minutes') else
@@ -296,8 +376,9 @@ def generate_week(monday, settings, calendar_events=(), prayer_days=None,
                 else:
                     warnings.append(f"Anchored routine needs review: {habit['name']} ({day:%a}).")
                     continue
-            if habit.get('preferred_time'):
-                minute = _clock(habit['preferred_time'])
+            _, preferred = schedule_for(habit, day)
+            if preferred:
+                minute = _clock(preferred)
                 start, end = midnight + dt.timedelta(minutes=minute), midnight + dt.timedelta(minutes=minute + duration)
                 if day == now.date() and start <= now + dt.timedelta(minutes=10):
                     pass
@@ -315,8 +396,8 @@ def generate_week(monday, settings, calendar_events=(), prayer_days=None,
     subjects = _subjects(courses, deadlines, monday)
     if not subjects and settings['weekly_study_minutes']:
         warnings.append('Add courses in GPA to generate focused study blocks.')
-    remaining = settings['weekly_study_minutes']
-    study_by_day = {day: 0 for day in days}
+    pinned_minutes = sum(study_by_day.values())
+    remaining = max(0, settings['weekly_study_minutes'] - pinned_minutes)
     active_days = [day for day in days if day >= now.date()]
     while remaining > 0 and subjects and active_days:
         progress = False
@@ -329,16 +410,23 @@ def generate_week(monday, settings, calendar_events=(), prayer_days=None,
             eligible = [subject for subject in subjects if subject['due'] is None or day <= subject['due']]
             if not eligible:
                 eligible = subjects
-            subject = min(eligible, key=lambda item: (item['allocated'] / item['priority'],
-                                                       -item['priority'], item['name']))
-            slot = _free_slot(day, duration, settings, occupied[day], now)
+            eligible.sort(key=lambda item: (item['allocated'] / item['priority'],
+                                            -item['priority'], item['name']))
+            slot = None
+            for subject in eligible:
+                due = subject['due_at']
+                # Blocks after a past deadline are general study, not preparation.
+                cutoff = due if due and now < due and day <= due.date() else None
+                slot = _free_slot(day, duration, settings, occupied[day], now, due_at=cutoff)
+                if slot:
+                    break
             if not slot:
                 active_days.remove(day)
                 continue
             start, end = slot
             title = f"Study · {subject['name']}"
-            detail = (f"Priority uses credits, current GPA gap"
-                      + (f" and deadline: {subject['deadline']}" if subject['deadline'] else '') + '.')
+            detail = ('Priority uses credits, current GPA gap'
+                      + (f" and deadline: {subject['deadline']}" if cutoff else '') + '.')
             blocks.append(_block('study', title, start, end, detail))
             occupied[day].append((start, end + dt.timedelta(minutes=settings['break_minutes'])))
             study_by_day[day] += duration
@@ -353,4 +441,4 @@ def generate_week(monday, settings, calendar_events=(), prayer_days=None,
         warnings.append(f'{remaining} study minutes did not fit inside the configured limits.')
     blocks.sort(key=lambda item: item['start'])
     return {'blocks': blocks, 'warnings': warnings,
-            'planned_study_minutes': settings['weekly_study_minutes'] - remaining}
+            'planned_study_minutes': max(settings['weekly_study_minutes'], pinned_minutes) - remaining}

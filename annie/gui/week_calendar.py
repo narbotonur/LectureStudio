@@ -1,13 +1,17 @@
 """Week calendar: a single painted time grid, cached data and background loading."""
 import datetime as dt
+import sqlite3
 import time
 import zlib
 from dataclasses import dataclass
 
-from PyQt5.QtCore import Qt, QRectF, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import QDateTime, Qt, QRectF, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPainter, QPen
-from PyQt5.QtWidgets import QAbstractScrollArea, QHBoxLayout, QLabel, QPushButton, QToolTip, QVBoxLayout, QWidget
-from annie.gui.design import UI_FONT
+from PyQt5.QtWidgets import (QAbstractScrollArea, QComboBox, QDateTimeEdit, QDialog, QFormLayout,
+                            QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                            QMessageBox, QPushButton, QToolTip, QVBoxLayout, QWidget)
+from annie.gui.design import UI_FONT, apply_theme, label, role
+from annie.planner import LocalCalendarStore, _event_interval
 
 TZ = dt.timezone(dt.timedelta(hours=5))
 COLORS = ('#344E66', '#51426B', '#355744', '#675033', '#633F4D', '#34595E')
@@ -285,7 +289,7 @@ class EliteTimetableView(QWidget):
     select_class = pyqtSignal(str)
     events_loaded = pyqtSignal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, root=None):
         super().__init__(parent)
         self.monday = dt.datetime.now(TZ).date()
         self.monday -= dt.timedelta(days=self.monday.weekday())
@@ -293,6 +297,8 @@ class EliteTimetableView(QWidget):
         self._worker = None
         self._pending = None
         self._study_store = None
+        self._local_calendar = LocalCalendarStore(root)
+        self._events = []
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
@@ -313,21 +319,71 @@ class EliteTimetableView(QWidget):
         self.grid = WeekGrid()
         self.grid.selected.connect(self.select_class)
         layout.addWidget(self.grid, 1)
+        self.day_choice = QComboBox()
+        self.day_choice.setAccessibleName('Day of the selected week')
+        self.day_choice.currentIndexChanged.connect(self._populate_day)
+        layout.addWidget(self.day_choice)
+        self.day_events = QListWidget()
+        self.day_events.setAccessibleName('Events in the selected day')
+        self.day_events.itemActivated.connect(self._activate_day_event)
+        layout.addWidget(self.day_events, 1)
+        self.day_choice.hide()
+        self.day_events.hide()
         footer = QHBoxLayout()
-        footer.addWidget(QLabel('UTC+05 · Click a class to use it in Studio'), 1)
-        add = QPushButton('+ Add class')
-        add.clicked.connect(self._open_add)
-        footer.addWidget(add)
-        calendar = QPushButton('Calendar ↗')
-        calendar.clicked.connect(self._open_calendar)
-        footer.addWidget(calendar)
+        footer.addWidget(QLabel('UTC+05'), 1)
+        for title, method in (('Add local class', lambda: self._edit_local()),
+                              ('Edit local class', self._choose_local),
+                              ('Add to Google', self._open_add), ('Google ↗', self._open_calendar)):
+            button = QPushButton(title)
+            button.clicked.connect(method)
+            footer.addWidget(button)
         layout.addLayout(footer)
         self._update_heading()
-        QTimer.singleShot(0, lambda: self.grid.verticalScrollBar().setValue(8 * self.grid.HOUR))
+        self.initial_scroll = QTimer(self, singleShot=True, interval=0)
+        self.initial_scroll.timeout.connect(self._scroll_to_morning)
+        self.initial_scroll.start()
+
+    def _scroll_to_morning(self):
+        self.grid.verticalScrollBar().setValue(8 * self.grid.HOUR)
 
     def _update_heading(self):
         end = self.monday + dt.timedelta(days=6)
         self.heading.setText(f'{self.monday:%d %b} – {end:%d %b %Y}')
+        today = dt.datetime.now(TZ).date()
+        self.day_choice.blockSignals(True)
+        self.day_choice.clear()
+        for index in range(7):
+            day = self.monday + dt.timedelta(days=index)
+            self.day_choice.addItem(day.strftime('%A, %d %B'), index)
+        self.day_choice.setCurrentIndex((today - self.monday).days if self.monday <= today <= end else 0)
+        self.day_choice.blockSignals(False)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        compact = event.size().width() < 860
+        self.grid.setVisible(not compact)
+        self.day_choice.setVisible(compact)
+        self.day_events.setVisible(compact)
+
+    def _populate_day(self, *_):
+        self.day_events.clear()
+        for block in self.grid.blocks:
+            if block.day != self.day_choice.currentIndex():
+                continue
+            event = block.event
+            summary = event.get('summary') or 'Untitled event'
+            timestamp = 'All day' if block.all_day else f'{int(block.start) // 60:02d}:{int(block.start) % 60:02d}'
+            source = 'Local' if event.get('annie_source') == 'local' else 'Google / study'
+            item = QListWidgetItem(f'{timestamp} · {summary} · {source}')
+            item.setData(Qt.UserRole, event)
+            self.day_events.addItem(item)
+
+    def _activate_day_event(self, item):
+        event = item.data(Qt.UserRole)
+        if event.get('annie_source') == 'local':
+            self._edit_local(event)
+        elif event.get('summary'):
+            self.select_class.emit(event['summary'])
 
     def set_study_store(self, store):
         self._study_store = store
@@ -343,7 +399,10 @@ class EliteTimetableView(QWidget):
             events = [event for event in events if event.get('id') not in local_ids and
                       event.get('extendedProperties', {}).get('private', {}).get('annieStudySession') not in session_ids]
             events.extend(local)
+        events.extend(self._local_events(self.monday))
+        self._events = events
         self.grid.set_events(events, self.monday)
+        self._populate_day()
         return events
 
     def _change_week(self, direction):
@@ -360,14 +419,18 @@ class EliteTimetableView(QWidget):
 
     def _refresh(self, force=False):
         from annie.calendar_service import is_connected
-        events = self.reload_local_sessions()
         if not is_connected():
-            self.status.setText('Connect your calendar to see classes here. Study sessions remain available locally.')
+            self._cache.clear()
+            self.reload_local_sessions()
+            self._emit_current_events()
+            self.status.setText('Google Calendar is disconnected. Local classes and study sessions are available.')
             return
+        events = self.reload_local_sessions()
         cached = self._cache.get(self.monday)
         if cached:
             self.status.setText('No events this week.' if not events else '')
             if not force and time.monotonic() - cached[0] < 300:
+                self._emit_current_events()
                 return
         if self._worker is not None:
             if self._worker.monday != self.monday:
@@ -379,17 +442,36 @@ class EliteTimetableView(QWidget):
         self._worker.finished.connect(self._finished)
         self._worker.start()
 
+    def _emit_current_events(self):
+        today = dt.datetime.now(TZ).date()
+        monday = today - dt.timedelta(days=today.weekday())
+        remote = list(self._cache.get(monday, (0, []))[1])
+        self.events_loaded.emit(remote + self._local_events(monday))
+
+    def _local_events(self, monday):
+        try:
+            return self._local_calendar.events(monday)
+        except (OSError, sqlite3.Error):
+            self.status.setText('Could not read local classes. Reopen Schedule to retry.')
+            return []
+
     def _loaded(self, monday, events, error):
+        from annie.calendar_service import is_connected
+        if not is_connected():
+            self._refresh()
+            return
         if not error:
             self._cache[monday] = (time.monotonic(), events)
             if len(self._cache) > 8:
                 oldest = min(self._cache, key=lambda key: self._cache[key][0])
                 del self._cache[oldest]
-            if monday <= dt.datetime.now(TZ).date() < monday + dt.timedelta(days=7):
-                self.events_loaded.emit(events)
+        else:
+            self._cache.pop(monday, None)
+        self._emit_current_events()
         if monday != self.monday:
             return
         if error:
+            self.reload_local_sessions()
             self.status.setText(error)
         else:
             events = self.reload_local_sessions()
@@ -412,6 +494,77 @@ class EliteTimetableView(QWidget):
         dialog = EliteAddClassModal(self, default_date=self.monday)
         dialog.event_added.connect(lambda _: self._refresh(force=True))
         dialog.exec_()
+
+    def _choose_local(self):
+        events = [event for event in self._events if event.get('annie_source') == 'local']
+        if not events:
+            self.status.setText('There are no local classes in this week.')
+            return
+        from PyQt5.QtWidgets import QInputDialog
+        options = [f"{_event_interval(item)[0]:%a %H:%M} · {item['summary']} · {index + 1}"
+                   for index, item in enumerate(events)]
+        selected, accepted = QInputDialog.getItem(self, 'Edit local class', 'Class', options, editable=False)
+        if accepted:
+            self._edit_local(events[options.index(selected)])
+
+    def _edit_local(self, event=None):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Edit local class' if event else 'Add local class')
+        form = QFormLayout(dialog)
+        title = QLineEdit(event.get('summary', '') if event else '')
+        location = QLineEdit(event.get('location', '') if event else '')
+        start, end = QDateTimeEdit(), QDateTimeEdit()
+        day = self.monday + dt.timedelta(days=max(0, self.day_choice.currentIndex()))
+        first = dt.datetime.combine(day, dt.time(hour=9), TZ)
+        interval = _event_interval(event) if event else (first, first + dt.timedelta(hours=1))
+        for widget, value in zip((start, end), interval):
+            widget.setCalendarPopup(True)
+            widget.setDisplayFormat('dd MMM yyyy HH:mm')
+            widget.setDateTime(QDateTime.fromString(value.strftime('%Y-%m-%dT%H:%M'), 'yyyy-MM-ddTHH:mm'))
+        form.addRow('Title', title)
+        form.addRow('Location', location)
+        form.addRow('Starts (UTC+05)', start)
+        form.addRow('Ends (UTC+05)', end)
+        status = label('')
+        status.setWordWrap(True)
+        form.addRow(status)
+        actions = QHBoxLayout()
+        save = role(QPushButton('Save local class'), 'primary')
+        cancel = QPushButton('Cancel')
+        cancel.clicked.connect(dialog.reject)
+        actions.addWidget(cancel)
+        actions.addWidget(save)
+
+        def commit():
+            values = [dt.datetime.fromisoformat(widget.dateTime().toString('yyyy-MM-ddTHH:mm') + '+05:00')
+                      for widget in (start, end)]
+            try:
+                self._local_calendar.save(title=title.text(), location=location.text(),
+                                          start=values[0], end=values[1],
+                                          identity=event['id'] if event else None)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                status.setText(str(exc))
+                return
+            dialog.accept()
+        save.clicked.connect(commit)
+
+        def remove():
+            if QMessageBox.question(dialog, 'Remove local class', 'Remove this class from your local calendar?') == QMessageBox.Yes:
+                try:
+                    self._local_calendar.delete(event['id'])
+                except (OSError, sqlite3.Error) as exc:
+                    status.setText(str(exc))
+                    return
+                dialog.accept()
+        if event:
+            delete = QPushButton('Remove')
+            delete.clicked.connect(remove)
+            actions.addWidget(delete)
+        form.addRow(actions)
+        apply_theme(dialog)
+        if dialog.exec_() == QDialog.Accepted:
+            self.reload_local_sessions()
+            self._emit_current_events()
 
     @staticmethod
     def _open_calendar():

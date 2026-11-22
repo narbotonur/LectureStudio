@@ -1,15 +1,16 @@
 """Review source evidence before creating a local deadline or study action."""
 import datetime as dt
 import sqlite3
+from dataclasses import asdict, is_dataclass
 
 from PyQt5.QtCore import QThread, Qt, pyqtSignal, QDateTime
-from PyQt5.QtWidgets import (QComboBox, QHBoxLayout, QLineEdit, QListWidget,
+from PyQt5.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout, QLineEdit, QListWidget,
                             QListWidgetItem, QPushButton, QSplitter, QTextEdit,
-                            QVBoxLayout, QWidget, QCheckBox, QDateTimeEdit)
+                            QVBoxLayout, QWidget, QCheckBox, QDateTimeEdit, QSpinBox)
 
-from annie.gui.design import label, role
+from annie.gui.design import apply_theme, label, role
 from annie.lecture_actions import (ActionStore, extract_actions, normalize_segments,
-                                   transcript_fingerprint)
+                                   transcript_fingerprint, verify_action)
 from annie.lecture_reconciliation import analyze_lecture
 from annie.obligations import ObligationStore
 
@@ -62,6 +63,8 @@ class LectureReviewPage(QWidget):
         self.analysis_generator = None
         self._worker = None
         self._segments, self._fingerprint = [], ''
+        self._raw_segments = []
+        self._selection = None
         self._course, self._source_name, self._lecture_date = '', 'Lecture', None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 6, 0)
@@ -71,6 +74,10 @@ class LectureReviewPage(QWidget):
         self.scan_button.clicked.connect(self.analyze)
         self.scan_button.setEnabled(False)
         heading.addWidget(self.scan_button)
+        self.excerpt_button = QPushButton('Choose excerpt')
+        self.excerpt_button.setEnabled(False)
+        self.excerpt_button.clicked.connect(self._choose_excerpt)
+        heading.addWidget(self.excerpt_button)
         layout.addLayout(heading)
         intro = label('Muse Spark proposes actions. Check the transcript quote and interpretation before approving. '
                       'Approved items stay local; deadlines appear in your Inbox and study actions in Today.')
@@ -96,10 +103,38 @@ class LectureReviewPage(QWidget):
         detail = QWidget()
         detail_layout = QVBoxLayout(detail)
         detail_layout.setContentsMargins(8, 0, 0, 0)
+        self.finding_heading = label('', 'section')
+        self.finding_heading.setTextFormat(Qt.PlainText)
+        self.finding_heading.setWordWrap(True)
+        detail_layout.addWidget(self.finding_heading)
+        self.change_summary = label('')
+        self.change_summary.setTextFormat(Qt.PlainText)
+        self.change_summary.setWordWrap(True)
+        detail_layout.addWidget(self.change_summary)
+        self.interpretation = label('')
+        self.interpretation.setTextFormat(Qt.PlainText)
+        self.interpretation.setWordWrap(True)
+        detail_layout.addWidget(self.interpretation)
         self.evidence = QTextEdit()
         self.evidence.setReadOnly(True)
         self.evidence.setPlaceholderText('Choose a finding to inspect its exact evidence.')
         detail_layout.addWidget(self.evidence, 1)
+        self.edit_fields = QWidget()
+        edit_form = QFormLayout(self.edit_fields)
+        edit_form.setContentsMargins(0, 0, 0, 0)
+        self.title_edit = QLineEdit()
+        self.title_edit.textEdited.connect(self._details_changed)
+        self.course_edit = QLineEdit()
+        self.course_edit.textEdited.connect(self._details_changed)
+        self.course_edit.setMaxLength(100)
+        self.duration_edit = QSpinBox()
+        self.duration_edit.setRange(5, 180)
+        self.duration_edit.setSuffix(' min')
+        edit_form.addRow('Title', self.title_edit)
+        edit_form.addRow('Course', self.course_edit)
+        edit_form.addRow('Study time', self.duration_edit)
+        self._duration_label = edit_form.labelForField(self.duration_edit)
+        detail_layout.addWidget(self.edit_fields)
         self.date_input = QLineEdit()
         self.date_input.setPlaceholderText('Confirm due date: 2026-11-03T17:00+05:00')
         self.date_input.setAccessibleName('Confirmed deadline date and time')
@@ -110,9 +145,13 @@ class LectureReviewPage(QWidget):
         self.due_editor.setAccessibleName('Confirmed deadline date and time, UTC plus five')
         self.due_editor.dateTimeChanged.connect(self._date_changed)
         detail_layout.addWidget(self.due_editor)
-        self.confirm_date = QCheckBox('I checked the assignment and confirmed this date and time (UTC+05).')
+        self.confirm_date = QCheckBox('I verified the assignment and due time (UTC+05).')
         self.confirm_date.setAccessibleName('Confirm assignment identity and deadline date')
+        self.confirm_date.toggled.connect(self._approval_state)
         detail_layout.addWidget(self.confirm_date)
+        self.approval_hint = label('')
+        self.approval_hint.setWordWrap(True)
+        detail_layout.addWidget(self.approval_hint)
         actions = QHBoxLayout()
         self.evidence_button = QPushButton('Go to transcript time')
         self.evidence_button.clicked.connect(self._open_evidence)
@@ -133,18 +172,69 @@ class LectureReviewPage(QWidget):
         self.reload()
 
     def set_transcript(self, segments, course='', source_name='Lecture', lecture_date=None):
+        raw = [asdict(segment) if is_dataclass(segment) else segment for segment in segments]
+        source = (course, source_name, lecture_date)
+        if source != (self._course, self._source_name, self._lecture_date) or raw != self._raw_segments:
+            self._selection = None
+        self._course, self._source_name, self._lecture_date = source
+        self._raw_segments = raw
+        self._refresh_excerpt()
+
+    def _refresh_excerpt(self):
+        segments = self._raw_segments
+        self.excerpt_button.setEnabled(bool(segments) and not self.has_running_job())
+        self._segments, self._fingerprint = [], ''
+        self.scan_button.setEnabled(False)
         if not segments:
-            self._segments, self._fingerprint = [], ''
-            self.scan_button.setEnabled(False)
             self.source_label.setText('Record or import a timestamped lecture to begin.')
             return
-        normalized = normalize_segments(segments)
+        excerpt = self._selection
+        if excerpt:
+            segments = [segment for segment in segments
+                        if segment['start'] < excerpt[1] and segment['end'] > excerpt[0]]
+        try:
+            normalized = normalize_segments(segments)
+        except ValueError as exc:
+            self.source_label.setText(f'{self._source_name} · {exc} Use Choose excerpt to select a time range.')
+            return
         self._segments = normalized
         self._fingerprint = transcript_fingerprint(normalized)
-        self._course, self._source_name, self._lecture_date = course, source_name, lecture_date
-        self.source_label.setText(f'{course or "Unspecified course"} · {source_name} · '
-                                  f'{len(normalized)} timestamped segments. Analysis sends text to Meta.')
+        span = f' · {_clock(excerpt[0])}–{_clock(excerpt[1])}' if excerpt else ''
+        self.source_label.setText(f'{self._course or "Unspecified course"} · {self._source_name}{span} · '
+                                  f'{len(normalized)} segments. Analysis sends the selected text to Meta.')
         self.scan_button.setEnabled(not self.has_running_job())
+
+    def _choose_excerpt(self):
+        if self.has_running_job() or not self._raw_segments:
+            return
+        import math
+        length = max(1, math.ceil(max(segment['end'] for segment in self._raw_segments)))
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Choose transcript excerpt')
+        layout = QFormLayout(dialog)
+        start, end = QSpinBox(), QSpinBox()
+        for widget, name in ((start, 'Start second'), (end, 'End second')):
+            widget.setRange(0, length)
+            widget.setSuffix(' s')
+            layout.addRow(name, widget)
+        first, last = self._selection or (0, min(length, 1200))
+        start.setValue(first)
+        end.setValue(last)
+        actions = QHBoxLayout()
+        entire = QPushButton('Use full transcript')
+        range_button = role(QPushButton('Use this range'), 'primary')
+        entire.clicked.connect(lambda: dialog.done(2))
+        range_button.clicked.connect(dialog.accept)
+        actions.addWidget(entire)
+        actions.addWidget(range_button)
+        end.valueChanged.connect(lambda value: range_button.setEnabled(value > start.value()))
+        start.valueChanged.connect(lambda value: range_button.setEnabled(end.value() > value))
+        layout.addRow(actions)
+        apply_theme(dialog)
+        result = dialog.exec_()
+        if result:
+            self._selection = (start.value(), end.value()) if result == QDialog.Accepted else None
+            self._refresh_excerpt()
 
     def _current(self):
         item = self.findings.currentItem()
@@ -181,11 +271,17 @@ class LectureReviewPage(QWidget):
     def _selected(self, *_):
         action = self._current()
         pending = bool(action and action['status'] == 'pending')
-        self.approve_button.setEnabled(pending)
         self.reject_button.setEnabled(pending)
         self.evidence_button.setEnabled(bool(action))
         deadline = bool(action and action['type'] == 'deadline')
         obligation = bool(action and action.get('_obligation'))
+        self.edit_fields.setVisible(pending)
+        self.title_edit.setMaxLength(160 if deadline else 240)
+        self.title_edit.setText(action.get('summary', '') if action else '')
+        self.course_edit.setText(action.get('course', '') if action else '')
+        self.duration_edit.setValue(action.get('minutes', 25) if action else 25)
+        self._duration_label.setVisible(not deadline)
+        self.duration_edit.setVisible(not deadline)
         self.date_input.setVisible(deadline and not obligation)
         self.date_input.setEnabled(pending)
         self.date_input.setText(action.get('due_at') or '' if action else '')
@@ -203,33 +299,35 @@ class LectureReviewPage(QWidget):
             self.due_editor.blockSignals(False)
             self.confirm_date.setEnabled(pending and self._manual_date_selected)
         self.approve_button.setText('Confirm deadline' if obligation else 'Approve')
+        self.finding_heading.setText(action.get('summary', '') if action else '')
+        self.change_summary.setVisible(obligation)
+        self.interpretation.setText('')
+        self._approval_state()
         if not action:
             self.evidence.clear()
             return
         if obligation:
-            details = [action['title'], '',
-                'Relationship: ' + action['relation'].replace('_', ' '),
-                'Previously confirmed' if action.get('assignment_id') else 'Earlier statement',
-                action.get('previous_due_at') or 'No previously confirmed date', '',
-                'Proposed: ' + (action['proposed_due_at'] or 'Unresolved — choose and confirm a date'),
-                '', action['reason'], '', 'TRANSCRIPT EVIDENCE']
+            def formatted(value, fallback):
+                return dt.datetime.fromisoformat(value).strftime('%d %b %Y at %H:%M') if value else fallback
+
+            prior = formatted(action.get('previous_due_at'), 'unspecified')
+            proposed = formatted(action.get('due_at'), 'choose a date below')
+            self.change_summary.setText(f'Earlier: {prior}  →  Reviewed: {proposed} · UTC+05')
+            self.interpretation.setText(f"{action['relation'].replace('_', ' ').capitalize()} · {action['reason']}")
+            details = ['Transcript evidence', '']
             for ref in action.get('previous_evidence', []):
                 details += [f'Previous source: {ref["source"]} · {_clock(ref["start"])}', ref['quote'], '']
             for index, ref in enumerate(action['evidence'], 1):
                 details += [f'{index}. {ref["source"]} · {_clock(ref["start"])} – {_clock(ref["end"])}', ref['quote'], '']
-            details += ['Quotes are checked against the saved transcript. Interpretation still needs your review.',
-                'On confirmation: one active deadline in your local Inbox; earlier versions remain in history.']
-            if not self._manual_date_selected:
-                details += ['No reliable date was found. Choose a date/time before confirming; the picker is only an unconfirmed starting value.']
             if action.get('delivery_pending'):
                 details += ['Confirmed, syncing to Inbox. Retry delivery or reopen Review to recover.']
             self.evidence.setPlainText('\n'.join(details))
             return
-        details = [action['summary'], '', f'Source: {action["source_name"]} / {action["source"]}',
+        self.interpretation.setText(action['suggested_action'])
+        details = [f'Source: {action["source_name"]} / {action["source"]}',
                    f'Transcript time: {_clock(action["t_start"])} – {_clock(action["t_end"])}',
                    '', action['quote'], '', action['evidence_check'],
                    f'Model confidence (not calibrated): {action["confidence"]:.0%}', '',
-                   f'Suggested action: {action["suggested_action"]}',
                    f'Estimated study time: {action["minutes"]} min']
         if action.get('needs_date'):
             details += ['', 'The date was ambiguous or unsupported. Enter a confirmed date and time to approve.']
@@ -241,12 +339,14 @@ class LectureReviewPage(QWidget):
         if self.has_running_job() or not self._segments:
             return
         self.scan_button.setEnabled(False)
+        self.excerpt_button.setEnabled(False)
         self.status.setText('Sending the current transcript to Meta and checking the returned evidence…')
         try:
             current = self.obligations.list_current(self._course or 'Unspecified course')
         except (ValueError, OSError, sqlite3.Error):
             self.status.setText('Could not read confirmed deadlines. Analysis was not sent.')
             self.scan_button.setEnabled(True)
+            self.excerpt_button.setEnabled(True)
             return
         reconcile = self.generator is None or self.analysis_generator is not None
         generator = self.analysis_generator if reconcile else self.generator
@@ -285,6 +385,7 @@ class LectureReviewPage(QWidget):
         if worker:
             worker.deleteLater()
         self.scan_button.setEnabled(bool(self._segments))
+        self.excerpt_button.setEnabled(bool(self._raw_segments))
 
     def _approve(self):
         action = self._current()
@@ -293,20 +394,23 @@ class LectureReviewPage(QWidget):
         try:
             # Historical findings retain their own immutable transcript snapshot.
             # For findings from the active source, reject stale revisions.
-            expected = self._fingerprint if self._segments and action['source_name'] == self._source_name else None
+            expected = self._approval_fingerprint(action)
             if action.get('_obligation'):
                 if not self.confirm_date.isChecked() or not self._manual_date_selected:
                     self.status.setText('Check the assignment, choose a date/time, and tick the confirmation before saving.')
                     return
                 due = self.due_editor.dateTime().toString('yyyy-MM-ddTHH:mm') + '+05:00'
-                saved = self.obligations.approve(action['id'], due_at=due, expected_fingerprint=expected)
+                saved = self.obligations.approve(action['id'], due_at=due, expected_fingerprint=expected,
+                                                 title=self.title_edit.text(), course=self.course_edit.text())
                 self.status.setText('Confirmed, syncing to Inbox. Reopen Review to retry delivery.'
                     if saved.get('delivery_pending') else 'Saved to Inbox. One active deadline; previous versions are retained.')
                 self.reload()
                 self.actions_changed.emit()
                 return
             due = self.date_input.text().strip() if action['type'] == 'deadline' else None
-            self.store.approve(action['id'], expected_fingerprint=expected, due_at=due or None)
+            self.store.approve(action['id'], expected_fingerprint=expected, due_at=due or None,
+                               title=self.title_edit.text(), course=self.course_edit.text(),
+                               minutes=self.duration_edit.value())
             self.status.setText('Approved locally. The deadline is in Inbox or the study action is in Today.')
             self.reload()
             self.actions_changed.emit()
@@ -314,6 +418,30 @@ class LectureReviewPage(QWidget):
             self.status.setText(str(exc))
         except (OSError, sqlite3.Error):
             self.status.setText('Could not save this approval. The finding remains available for review.')
+
+    def _approval_fingerprint(self, action):
+        if action['source_name'] != self._source_name or not self._raw_segments:
+            return None
+        fingerprint = action['fingerprint']
+        if self._fingerprint == fingerprint:
+            return fingerprint
+        # A finding may have been created from an excerpt with different boundaries.
+        # Recheck its saved source quotes against the complete local transcript.
+        refs = action.get('evidence') or [{
+            'quote': action['quote'], 'source': action['source'],
+            'start': action['t_start'], 'end': action['t_end']}]
+        for ref in refs:
+            nearby = [row for row in self._raw_segments
+                      if row['start'] < ref['end'] and row['end'] > ref['start']]
+            try:
+                verify_action({'type': 'key_concept', 'summary': 'Review evidence',
+                               'quote': ref['quote'], 'source': ref['source'],
+                               't_start': ref['start'], 't_end': ref['end'],
+                               'confidence': 0, 'suggested_action': 'Check the source'},
+                              nearby, lecture_date=self._lecture_date)
+            except ValueError:
+                raise ValueError('The transcript evidence changed. Analyze the affected passage before approving.') from None
+        return fingerprint
 
     def _reject(self):
         action = self._current()
@@ -337,6 +465,26 @@ class LectureReviewPage(QWidget):
         self._manual_date_selected = True
         self.confirm_date.setChecked(False)
         self.confirm_date.setEnabled(True)
+        self._approval_state()
+
+    def _details_changed(self, *_):
+        self.confirm_date.setChecked(False)
+        self._approval_state()
+
+    def _approval_state(self, *_):
+        action = self._current()
+        pending = bool(action and action['status'] == 'pending')
+        reminder = ''
+        if pending and not self.title_edit.text().strip():
+            reminder = 'Enter a title before approving.'
+        elif pending and action.get('_obligation'):
+            if not self._manual_date_selected:
+                reminder = 'Choose the deadline date and time.'
+            elif not self.confirm_date.isChecked():
+                reminder = 'Confirm the assignment and its date to enable saving.'
+        self.approve_button.setEnabled(pending and not reminder)
+        self.approval_hint.setText(reminder)
+        self.approval_hint.setVisible(bool(reminder))
 
     def stop_background(self):
         # The owner uses has_running_job() to keep the page alive until the

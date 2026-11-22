@@ -52,6 +52,7 @@ class DeadlineReviewTests(unittest.TestCase):
             for segment in SEGMENTS:
                 self.assertIn(segment['text'], page.evidence.toPlainText())
             self.assertEqual(DeadlineStore(root).load(), [])
+            self.assertFalse(page.approve_button.isEnabled())
             page._approve()
             self.assertEqual(page.obligations.list_proposals()[0]['status'], 'pending')
             page.confirm_date.setChecked(True)
@@ -59,6 +60,34 @@ class DeadlineReviewTests(unittest.TestCase):
             self.assertEqual(len(DeadlineStore(root).load()), 1)
             self.assertEqual(DeadlineStore(root).load()[0]['due_at'], '2026-11-06T17:00+05:00')
             self.assertEqual(len(ObligationStore(root).list_current()), 1)
+            page.close()
+
+    def test_large_transcript_can_select_an_excerpt_without_losing_time(self):
+        with tempfile.TemporaryDirectory() as root:
+            page = LectureReviewPage(store=ActionStore(root))
+            large = [{**segment, 'text': segment['text'] + ' ' + 'x' * 100_000} for segment in SEGMENTS]
+            page.set_transcript(large, 'CSCI 231', SOURCE)
+            self.assertFalse(page.scan_button.isEnabled())
+            self.assertTrue(page.excerpt_button.isEnabled())
+            page._selection = (59, 76)
+            page._refresh_excerpt()
+            self.assertTrue(page.scan_button.isEnabled())
+            self.assertEqual(page._segments[0].start, 60)
+            page.close()
+
+    def test_unchanged_excerpt_approval_after_full_archive_reopened(self):
+        from annie.lecture_actions import extract_actions
+        from tools.demo_lecture_actions import SEGMENTS as fixture, response
+        with tempfile.TemporaryDirectory() as root:
+            day = dt.date(2026, 10, 27)
+            excerpt = fixture[1:2]
+            scan = extract_actions(excerpt, 'CSCI 231', SOURCE, response, day)
+            store = ActionStore(root)
+            self.assertEqual(store.add_scan(scan, excerpt, 'CSCI 231', SOURCE, day), 1)
+            page = LectureReviewPage(store=store)
+            page.set_transcript(fixture, 'CSCI 231', SOURCE, day)
+            page._approve()
+            self.assertEqual(len(store.approved_tasks()), 1)
             page.close()
 
     def test_unresolved_date_requires_edit_and_confirmation(self):

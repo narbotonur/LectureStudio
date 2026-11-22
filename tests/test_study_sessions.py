@@ -73,6 +73,38 @@ class StudyStoreTests(unittest.TestCase):
         self.assertEqual(StudyStore(self.store.path).elapsed(sid, now=3700), 3600)
         self.assertEqual(duration_text(3661, clock=True), '01:01:01')
 
+    def test_manual_session_and_edits_change_totals_keep_event_id(self):
+        start = dt.datetime(2026, 9, 7, 12, tzinfo=TZ).timestamp()
+        session = self.store.record_completed(self.subject['id'], start, 20 * 60, now=start + 3600)
+        updated_subject = self.store.add_subject('Physics')
+        before = self.store.event_body(session)
+        edited = self.store.update_completed(session['id'], updated_subject['id'], 10 * 60, now=start + 3600)
+        self.assertEqual(edited['sync_state'], 'local')
+        self.assertIsNone(self.store.active())
+        self.assertEqual(self.store.totals(end=start + 3600), 600)
+        calendar = self.store.calendar_events(dt.date(2026, 9, 7), dt.date(2026, 9, 8))[0]
+        self.assertEqual(calendar['id'], before['id'])
+        self.assertEqual(calendar['summary'], 'Study · Physics')
+        self.assertEqual(calendar['end']['dateTime'], '2026-09-07T12:10:00+05:00')
+        with self.assertRaisesRegex(ValueError, 'ending in the past'):
+            self.store.update_completed(session['id'], updated_subject['id'], 3601, now=start + 3600)
+        self.assertEqual(self.store.history()[0]['seconds'], 600)
+
+    def test_subject_edit_preserves_breaks_and_stale_sync_cannot_win(self):
+        sid = self.store.start(self.subject['id'], sync=True, now=100)['id']
+        self.store.transition(sid, 'pause', now=120)
+        self.store.transition(sid, 'resume', now=150)
+        self.store.transition(sid, 'end', now=190)
+        old = self.store.pending_sync()[0]
+        new = self.store.add_subject('Physics')
+        self.store.update_completed(sid, new['id'])
+        self.store.mark_sync(sid, revision=old['sync_revision'])
+        pending = self.store.pending_sync()[0]
+        self.assertEqual((pending['started'], pending['ended'], pending['seconds']), (100, 190, 60))
+        self.assertEqual(pending['subject'], 'Physics')
+        self.store.mark_sync(sid, revision=pending['sync_revision'])
+        self.assertFalse(self.store.pending_sync())
+
 
 class StudyUITests(StudyStoreTests):
     @classmethod
@@ -152,6 +184,26 @@ class StudyUITests(StudyStoreTests):
             StudySyncThread(self.store).run()
         self.assertEqual(self.store.pending_sync(), [])
         self.assertEqual(service.events.return_value.insert.call_count, 1)
+        service.events.return_value.patch.assert_not_called()
+
+    def test_edit_sync_patches_the_linked_calendar_event(self):
+        from googleapiclient.errors import HttpError
+        from httplib2 import Response
+        session = self.store.record_completed(self.subject['id'], 100, 60, sync=True, now=400)
+        before = self.store.event_body(session)
+        self.store.mark_sync(session['id'])
+        self.store.update_completed(session['id'], self.subject['id'], 120, now=400)
+        service = Mock()
+        service.events.return_value.insert.return_value.execute.side_effect = HttpError(
+            Response({'status': '409'}), b'{}')
+        service.events.return_value.get.return_value.execute.return_value = before
+        with patch('annie.calendar_service.get_service', return_value=service):
+            StudySyncThread(self.store).run()
+        arguments = service.events.return_value.patch.call_args.kwargs
+        self.assertEqual(arguments['eventId'], before['id'])
+        self.assertNotIn('id', arguments['body'])
+        self.assertIn('end', arguments['body'])
+        self.assertFalse(self.store.pending_sync())
 
 
 if __name__ == '__main__':

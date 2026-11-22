@@ -1,4 +1,54 @@
-# Lecture Studio 0.8.0 · Campus Radar preview
+# Lecture Studio 0.9.2 · Transcript navigation
+
+## What's new since 0.8.0
+
+- **Lecture workspace.** Open Notes, Transcript, and Flashcards from the same workspace. Open the library from Today or with Ctrl+O. Import audio directly from Lecture. Recording controls stay accessible when you switch sections.
+- **Transcript reader.** Find phrases in visible passages with Ctrl+F. F3 and Shift+F3 move between matches. Adjust playback speed, see the current passage, and save named bookmarks at exact times. Bookmarks reopen with the lecture.
+- **Editing and audio.** Correct passages with F2, rename or merge speaker groups, and review overlapping speech. Test the input with a short recording, prepare Whisper, and install optional local Sherpa models from the app.
+- **Local archive.** Search lectures by title, course, tags, or content. Edit lecture details, link an audio file, restore revisions, or export WebVTT captions.
+- **Study workflow.** Review local deadlines and suggested study blocks, edit routine check-ins and study sessions, forecast course scores, and review flashcards. The optional Campus Radar Chrome adapter adds per-course controls and freshness information.
+- **Desktop design.** Updated navigation, typography, transcript and notes layouts. Compact Windows layout checked at 100%, 125%, and 150% scaling.
+
+## Install
+
+Download the Windows x64 ZIP and its SHA-256 file. Extract the full ZIP and open `LectureStudio.exe`. Keep the worker and `_internal` folder beside it. The Windows executable is unsigned.
+
+Close Studio and back up `%LOCALAPPDATA%\Annie\LectureStudio` before replacing an older installation. Install the optional Campus Radar adapter as an unpacked Chrome extension only if you use it. The adapter has its own ZIP and checksum.
+
+## Verification
+
+The source suite and frozen Windows smoke tests use clean profiles and test audio. Classroom speaker attribution and physical microphone behavior depend on the recording and device. See the package's `START_HERE.md` for setup.
+
+## Lecture Studio 0.9.1 · Audio setup and speaker review
+
+- Check the selected audio source with a five-second local recording, peak level, and playback. The recording view displays audio input and transcript processing separately.
+- Prepare Whisper on demand or install the optional Sherpa models from Studio. The speaker download shows transfer progress and validates the files before use.
+- Filter a transcript by speaker, preview an excerpt, rename or merge speakers, and assign selected passages. Filter unassigned passages and overlapping speech for review.
+- Keep the window at its selected size when switching workspace tabs in compact mode.
+
+## Lecture Studio 0.9.0 · Local lecture library
+
+- Search lecture titles, courses, tags, notes and transcript passages. Edit the lecture title, course, date and content with local autosave and revision history.
+- Link audio to a transcript, double-click a passage to play it, or click its time. Review can open the archived lecture behind a finding. Export captions as WebVTT.
+- Use the optional local speaker models to label recurring voices. Right-click a passage to edit speaker groups, reassign passages or correct text. Review retains the original source.
+- Manage saved deadlines in Deadline Inbox. Today checks due times and conflicts, and supports manual and pinned blocks. Schedule supports local classes and a compact day view.
+- Edit completed study sessions and past routine check-ins. Academics supports semester filters, archived courses, score pasting and component forecasts.
+- Export editable flashcards as Anki TSV or review due cards in Studio. Campus Radar adds per-course controls, freshness and deadline drafts. Saved lecture labs support graph variants.
+
+## Upgrade and recovery
+
+1. Close Lecture Studio and back up the entire per-user profile. On Windows the
+   default is `%LOCALAPPDATA%\Annie\LectureStudio`. On macOS it is
+   `~/Library/Application Support/Annie/LectureStudio`.
+2. Install the new app in a separate app folder and open Studio. The lecture
+   library reads older transcript archives. A save writes version 2 and adds
+   speaker labels, notes and other lecture data where present.
+3. If the original audio is missing, open the transcript and choose **Link audio**.
+   See [Local speaker analysis](DIARIZATION.md) for optional model files.
+4. To revert, close Studio before restoring the profile backup. Keep a separate
+   copy of the updated profile if you need materials saved after the upgrade.
+
+## Previous version · 0.8.0 · Campus Radar preview
 
 - More → Campus Radar reviews observed coursework changes and source freshness; Today links to unreviewed changes.
 - An optional local Chrome extension checks explicitly watched NU WeBWorK courses using a signed-in course tab, about every five minutes while Chrome runs.

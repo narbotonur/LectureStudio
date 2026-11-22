@@ -1,7 +1,7 @@
 """Course, component-grade and credit-weighted GPA workspace."""
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
+from PyQt5.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QInputDialog,
                             QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame,
                             QHBoxLayout, QHeaderView, QLineEdit, QListWidget,
                             QListWidgetItem, QMessageBox, QPushButton, QSplitter,
@@ -22,7 +22,7 @@ def _metric(title):
 
 
 class CourseDialog(QDialog):
-    def __init__(self, parent=None, course=None):
+    def __init__(self, parent=None, course=None, semester=''):
         super().__init__(parent)
         self.setWindowTitle('Edit course' if course else 'Add course')
         layout = QVBoxLayout(self)
@@ -39,7 +39,10 @@ class CourseDialog(QDialog):
             self.target.addItem(f'{letter} · at least {minimum:g}% · {points:.2f} GPA', minimum)
         target = course['target_percent'] if course else 85
         self.target.setCurrentIndex(max(0, self.target.findData(target)))
+        self.semester = QLineEdit(course.get('semester', '') if course else semester)
+        self.semester.setPlaceholderText('2026 Fall')
         form.addRow('Course', self.name)
+        form.addRow('Semester', self.semester)
         form.addRow('Credits', self.credits)
         form.addRow('Target', self.target)
         layout.addLayout(form)
@@ -50,6 +53,9 @@ class CourseDialog(QDialog):
 
     def values(self):
         return self.name.text(), self.credits.value(), self.target.currentData()
+
+    def semester_name(self):
+        return self.semester.text().strip()
 
 
 class ComponentDialog(QDialog):
@@ -97,6 +103,7 @@ class GpaTrackerPage(QWidget):
         super().__init__(parent)
         self.store = store or GpaStore()
         self._courses = []
+        self._scenario = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 6, 0)
         layout.setSpacing(10)
@@ -112,6 +119,15 @@ class GpaTrackerPage(QWidget):
         heading.addWidget(self.add_course_button)
         layout.addLayout(heading)
 
+        filters = QHBoxLayout()
+        self.semester = QComboBox()
+        self.semester.setAccessibleName('Filter courses by semester')
+        self.semester.currentIndexChanged.connect(lambda _: self.reload())
+        self.archived = QCheckBox('Include archived')
+        self.archived.toggled.connect(lambda _: self.reload())
+        filters.addWidget(self.semester, 1)
+        filters.addWidget(self.archived)
+        layout.addLayout(filters)
         stats = QHBoxLayout()
         self.gpa_card, self.gpa_value = _metric('Estimated semester GPA')
         self.target_card, self.target_value = _metric('Target GPA')
@@ -120,8 +136,8 @@ class GpaTrackerPage(QWidget):
             stats.addWidget(card, 1)
         layout.addLayout(stats)
 
-        split = QSplitter(Qt.Horizontal)
-        courses_panel = role(QFrame(), 'panel')
+        split = self.split = QSplitter(Qt.Horizontal)
+        courses_panel = self.courses_panel = role(QFrame(), 'panel')
         courses_layout = QVBoxLayout(courses_panel)
         courses_layout.addWidget(label('Courses', 'section'))
         self.course_list = QListWidget()
@@ -133,7 +149,10 @@ class GpaTrackerPage(QWidget):
         self.edit_course_button.clicked.connect(self._edit_course)
         self.delete_course_button = QPushButton('Delete')
         self.delete_course_button.clicked.connect(self._delete_course)
+        self.archive_button = QPushButton('Archive')
+        self.archive_button.clicked.connect(self._archive_course)
         course_actions.addWidget(self.edit_course_button)
+        course_actions.addWidget(self.archive_button)
         course_actions.addWidget(self.delete_course_button)
         courses_layout.addLayout(course_actions)
         split.addWidget(courses_panel)
@@ -156,6 +175,12 @@ class GpaTrackerPage(QWidget):
         component_header.addWidget(label('Grade components', 'section'), 1)
         self.add_component_button = QPushButton('+ Add component')
         self.add_component_button.clicked.connect(self._add_component)
+        self.paste_button = QPushButton('Paste scores')
+        self.paste_button.clicked.connect(self._paste_scores)
+        self.template_button = QPushButton('Weights…')
+        self.template_button.clicked.connect(self._weight_template)
+        component_header.addWidget(self.paste_button)
+        component_header.addWidget(self.template_button)
         component_header.addWidget(self.add_component_button)
         detail_layout.addLayout(component_header)
         self.table = QTableWidget(0, 4)
@@ -185,6 +210,9 @@ class GpaTrackerPage(QWidget):
         self.what_if_score.valueChanged.connect(self._update_what_if)
         what_if.addWidget(self.what_if_score)
         what_if.addWidget(label('on remaining work?', 'muted'))
+        self.component_scenario = QPushButton('By component…')
+        self.component_scenario.clicked.connect(self._edit_scenario)
+        what_if.addWidget(self.component_scenario)
         what_if.addStretch()
         detail_layout.addLayout(what_if)
         self.what_if_result = label('Choose a course to explore a scenario.')
@@ -209,6 +237,14 @@ class GpaTrackerPage(QWidget):
         layout.addWidget(footer)
         self.reload()
 
+    def set_compact(self, compact):
+        orientation = Qt.Vertical if compact else Qt.Horizontal
+        if self.split.orientation() == orientation:
+            return
+        self.courses_panel.setMaximumHeight(166 if compact else 16777215)
+        self.split.setOrientation(orientation)
+        self.split.setSizes([160, 600] if compact else [260, 760])
+
     def _selected_course(self):
         row = self.course_list.currentRow()
         return self._courses[row] if 0 <= row < len(self._courses) else None
@@ -223,7 +259,15 @@ class GpaTrackerPage(QWidget):
 
     def reload(self, select_id=None):
         previous = select_id or (self._selected_course() or {}).get('id')
-        self._courses = self.store.courses()
+        semester_name = self.semester.currentData()
+        self.semester.blockSignals(True)
+        self.semester.clear()
+        self.semester.addItem('All semesters', None)
+        for name in self.store.semesters():
+            self.semester.addItem(name or 'Unassigned semester', name)
+        self.semester.setCurrentIndex(max(0, self.semester.findData(semester_name)))
+        self.semester.blockSignals(False)
+        self._courses = self.store.courses(semester_name, include_archived=self.archived.isChecked())
         self.course_list.blockSignals(True)
         self.course_list.clear()
         selected_row = -1
@@ -236,8 +280,8 @@ class GpaTrackerPage(QWidget):
             if course['id'] == previous:
                 selected_row = row
         self.course_list.blockSignals(False)
-        semester = self.store.semester_summary()
-        self.gpa_value.setText('—' if semester['estimated_gpa'] is None else f"{semester['estimated_gpa']:.2f} / 4.00")
+        semester = self.store.semester_summary(semester_name, include_archived=self.archived.isChecked())
+        self.gpa_value.setText('—' if semester['estimated_gpa'] is None else f"{semester['estimated_gpa']:.2f} / 4.00 · {semester['estimated_credits']:g} with grades")
         self.target_value.setText('—' if semester['target_gpa'] is None else f"{semester['target_gpa']:.2f} / 4.00")
         self.credit_value.setText(f"{semester['credits']:g}")
         if self._courses:
@@ -249,8 +293,11 @@ class GpaTrackerPage(QWidget):
     def _course_selected(self, row):
         course = self._selected_course()
         enabled = course is not None
-        for widget in (self.edit_course_button, self.delete_course_button,
-                       self.add_component_button, self.what_if_score):
+        if course:
+            self.archive_button.setText('Restore' if course.get('archived') else 'Archive')
+        for widget in (self.edit_course_button, self.delete_course_button, self.archive_button,
+                       self.add_component_button, self.what_if_score, self.component_scenario,
+                       self.paste_button, self.template_button):
             widget.setEnabled(enabled)
         self.table.blockSignals(True)
         self.table.setRowCount(0)
@@ -342,23 +389,26 @@ class GpaTrackerPage(QWidget):
         if not course:
             self.what_if_result.setText('Choose a course to explore a scenario.')
             return
-        result = self.store.what_if(course['id'], self.what_if_score.value())
+        result = self.store.what_if(course['id'], self.what_if_score.value(), self._active_scenario(course['id']))
         if not result['remaining_weight']:
             text = f"Course complete: {result['projected_percent']:.1f}% · {result['projected_letter']}."
         else:
             text = (f"Projected final: {result['projected_percent']:.1f}% · {result['projected_letter']} "
                     f"({result['projected_gpa_points']:.2f} GPA points). "
                     f"Assumes {result['remaining_score']:g}% across all remaining {result['remaining_weight']:g}%.")
-        self.what_if_result.setText(text + ' Scenario only; recorded grades stay unchanged.')
+        count = len(self._active_scenario(course['id']))
+        if count:
+            text = f"Projected final: {result['projected_percent']:.1f}% · {result['projected_letter']}. Using {count} component override(s)."
+        self.what_if_result.setText(text + ' The scenario is a preview.')
 
     def _show_error(self, error):
         QMessageBox.warning(self, 'Could not save', str(error))
 
     def _add_course(self):
-        dialog = CourseDialog(self)
+        dialog = CourseDialog(self, semester=self.semester.currentData() or '')
         if dialog.exec_() == QDialog.Accepted:
             try:
-                course = self.store.add_course(*dialog.values())
+                course = self.store.add_course(*dialog.values(), semester=dialog.semester_name())
                 self.reload(course['id'])
                 self.changed.emit()
             except ValueError as exc:
@@ -371,7 +421,7 @@ class GpaTrackerPage(QWidget):
         dialog = CourseDialog(self, course)
         if dialog.exec_() == QDialog.Accepted:
             try:
-                self.store.update_course(course['id'], *dialog.values())
+                self.store.update_course(course['id'], *dialog.values(), semester=dialog.semester_name())
                 self.reload(course['id'])
                 self.changed.emit()
             except ValueError as exc:
@@ -387,6 +437,77 @@ class GpaTrackerPage(QWidget):
             self.store.delete_course(course['id'])
             self.reload()
             self.changed.emit()
+
+    def _archive_course(self):
+        course = self._selected_course()
+        if course:
+            self.store.archive_course(course['id'], not course.get('archived'))
+            self.reload()
+            self.changed.emit()
+
+    def _active_scenario(self, course_id):
+        return {item['id']: self._scenario[item['id']] for item in self.store.assessments(course_id)
+                if item['score'] is None and item['id'] in self._scenario}
+
+    def _edit_scenario(self):
+        course = self._selected_course()
+        if not course:
+            return
+        pending = [item for item in self.store.assessments(course['id']) if item['score'] is None]
+        if not pending:
+            self.what_if_result.setText('This course has no ungraded components.')
+            return
+        choices = {f"{i+1}. {item['name']} · {item['weight']:g}% weight": item['id']
+                   for i, item in enumerate(pending)}
+        choice, ok = QInputDialog.getItem(self, 'Component scenario', 'Ungraded component', list(choices), 0, False)
+        if ok:
+            identity = choices[choice]
+            value, ok = QInputDialog.getDouble(self, 'Component scenario', 'Hypothetical percentage (-1 clears)',
+                self._scenario.get(identity, self.what_if_score.value()), -1, 100, 1)
+            if ok:
+                if value < 0:
+                    self._scenario.pop(identity, None)
+                else:
+                    self._scenario[identity] = value
+                self._update_what_if()
+
+    def _paste_scores(self):
+        course = self._selected_course()
+        if not course:
+            return
+        values, ok = QInputDialog.getMultiLineText(self, 'Paste scores',
+            'Paste one score per line, starting at the selected component. An empty line clears a score.')
+        if not ok or not values:
+            return
+        row = max(0, self.table.currentRow())
+        items = self.store.assessments(course['id'])[row:]
+        scores = values.splitlines()
+        if len(scores) > len(items):
+            self._show_error('There are more pasted scores than available components.')
+            return
+        try:
+            self.store.set_scores((item['id'], score) for item, score in zip(items, scores))
+            self.reload(course['id'])
+            self.changed.emit()
+        except ValueError as exc:
+            self._show_error(str(exc))
+
+    def _weight_template(self):
+        course = self._selected_course()
+        if not course:
+            return
+        text, ok = QInputDialog.getMultiLineText(self, 'Add weight template',
+            'Enter one component per line as name and weight, separated by a tab.',
+            'Assignments\t30\nMidterm\t30\nFinal\t40')
+        if not ok or not text.strip():
+            return
+        try:
+            rows = [tuple(part.strip() for part in line.split('\t', 1)) for line in text.splitlines() if line.strip()]
+            self.store.add_weight_template(course['id'], rows)
+            self.reload(course['id'])
+            self.changed.emit()
+        except ValueError as exc:
+            self._show_error(str(exc))
 
     def _add_component(self):
         course = self._selected_course()

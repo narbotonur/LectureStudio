@@ -5,13 +5,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const core = require('../core.js');
 
-async function worker({tabs = [], snapshots = {}, stopDuringCapture = false, postOK = true, alarmExists = true} = {}) {
-  const state = {courses: ['TEST_101'], token: 'test-token'}, posts = [], attempts = [], alarms = [];
+async function worker({tabs = [], snapshots = {}, stopDuringCapture = false, pauseDuringCapture = false,
+  postOK = true, alarmExists = true, courses = ['TEST_101'], pausedCourses = [], selected = null} = {}) {
+  const state = {courses, pausedCourses, token: 'test-token'}, posts = [], attempts = [], alarms = [];
   const chrome = {
     storage: {local: {get: async () => ({...state}), set: async values => Object.assign(state, values), setAccessLevel: async () => {}}},
     tabs: {query: async () => tabs, sendMessage: async id => {
       attempts.push(id);
       if (stopDuringCapture) state.courses = [];
+      if (pauseDuringCapture) state.pausedCourses = ['TEST_101'];
       if (!snapshots[id]) throw Error('No receiving content script');
       return {snapshot: snapshots[id]};
     }},
@@ -25,7 +27,7 @@ async function worker({tabs = [], snapshots = {}, stopDuringCapture = false, pos
     fetch: async (url, options) => { posts.push({url, body: JSON.parse(options.body)}); return {ok: postOK}; }};
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../background.js'), 'utf8'), context);
-  await vm.runInContext('poll()', context);
+  await vm.runInContext('poll(' + JSON.stringify(selected) + ')', context);
   return {state, posts, attempts, alarms};
 }
 const capture = {source: {name: 'TEST_101'}, complete: true};
@@ -48,6 +50,21 @@ test('stop while capture is in flight prevents sending coursework', async () => 
   const result = await worker({tabs: [tab(1, true)], snapshots: {1: capture}, stopDuringCapture: true});
   assert.equal(result.posts.length, 0);
   assert.doesNotMatch(result.state.status || '', /Captured/);
+});
+test('a paused course skips automatic checks but supports its own manual check', async () => {
+  const base = {tabs: [tab(1, true)], snapshots: {1: capture}, courses: ['TEST_101', 'OTHER'],
+    pausedCourses: ['TEST_101']};
+  const automatic = await worker(base);
+  assert.deepEqual(automatic.attempts, []);
+  assert.ok(automatic.posts.every(item => item.body.source_id === 'ww.OTHER'));
+  const manual = await worker({...base, selected: 'TEST_101'});
+  assert.deepEqual(manual.attempts, [1]);
+  assert.equal(manual.posts.length, 1);
+  assert.match(manual.state.courseStatus.TEST_101, /Captured/);
+});
+test('pausing an automatic check while capture is in flight suppresses its post', async () => {
+  const result = await worker({tabs: [tab(1, true)], snapshots: {1: capture}, pauseDuringCapture: true});
+  assert.equal(result.posts.length, 0);
 });
 test('worker restores a missing five-minute alarm without resetting an existing one', async () => {
   const missing = await worker({alarmExists: false});

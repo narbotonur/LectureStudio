@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+from importlib.util import find_spec
 from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs, collect_data_files, copy_metadata
 
 root = Path(SPECPATH).parent
@@ -10,7 +11,8 @@ binaries = []
 hidden = ['soundcard', 'win32crypt', 'win32timezone', 'pycaw.pycaw', 'comtypes.client',
           'google.auth.transport.requests', 'google_auth_oauthlib.flow', 'googleapiclient.discovery',
           'google.genai', 'pypdf', 'PIL.Image', 'PyQt5.QtSvg']
-for package in ('faster_whisper', 'av', 'tokenizers', 'soundcard'):
+speaker_packages = ('sherpa_onnx',) if find_spec('sherpa_onnx') else ()
+for package in ('faster_whisper', 'av', 'tokenizers', 'soundcard', *speaker_packages):
     data, binary, imports = collect_all(package)
     datas += data
     binaries += binary

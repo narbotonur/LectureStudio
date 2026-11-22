@@ -1,6 +1,7 @@
 """Durable study subjects, session timestamps and active-time accounting."""
 from contextlib import contextmanager
 import datetime as dt
+import math
 from pathlib import Path
 import sqlite3
 import time
@@ -17,6 +18,15 @@ def duration_text(seconds, clock=False):
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f'{hours:02}:{minutes:02}:{seconds:02}' if clock else f'{hours}h {minutes:02}m'
+
+
+def _completed_interval(started, seconds, now):
+    values = (started, seconds, now)
+    if any(type(value) not in (float, int) or not math.isfinite(value) for value in values):
+        raise ValueError('Enter a valid start time and duration.')
+    if seconds <= 0 or started + seconds > now:
+        raise ValueError('Enter a positive duration ending in the past.')
+    return started + seconds
 
 
 class StudyStore:
@@ -38,6 +48,9 @@ class StudyStore:
                     started REAL NOT NULL, ended REAL);
                 CREATE INDEX IF NOT EXISTS segment_session ON segments(session_id);
             ''')
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(sessions)')}
+            if 'sync_revision' not in columns:
+                db.execute('ALTER TABLE sessions ADD COLUMN sync_revision INTEGER NOT NULL DEFAULT 0')
 
     @contextmanager
     def connection(self):
@@ -82,8 +95,7 @@ class StudyStore:
             db.execute('BEGIN IMMEDIATE')
             if self._row(db):
                 raise ValueError('End the current session before starting another one.')
-            if not db.execute('SELECT 1 FROM subjects WHERE id=?', (subject_id,)).fetchone():
-                raise ValueError('Choose a saved subject first.')
+            self._validate_subject(db, subject_id)
             session_id = uuid.uuid4().hex
             db.execute('INSERT INTO sessions(id,subject_id,started,state,sync_state) VALUES (?,?,?,?,?)',
                        (session_id, subject_id, now, 'running', 'pending' if sync else 'local'))
@@ -114,6 +126,49 @@ class StudyStore:
                 db.execute('UPDATE sessions SET state=?, ended=? WHERE id=?',
                            ('finished' if action == 'end' else 'paused', now if action == 'end' else None, session_id))
             return self._row(db, session_id)
+
+    def record_completed(self, subject_id, started, seconds, *, sync=False, now=None):
+        now = time.time() if now is None else now
+        ended = _completed_interval(started, seconds, now)
+        session_id = uuid.uuid4().hex
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self._validate_subject(db, subject_id)
+            db.execute('''INSERT INTO sessions(id,subject_id,started,ended,state,sync_state)
+                          VALUES (?,?,?,?,?,?)''',
+                       (session_id, subject_id, started, ended, 'finished', 'pending' if sync else 'local'))
+            db.execute('INSERT INTO segments(session_id,started,ended) VALUES (?,?,?)',
+                       (session_id, started, ended))
+            db.execute('UPDATE subjects SET last_used=MAX(?,last_used) WHERE id=?', (ended, subject_id))
+            return self._row(db, session_id)
+
+    def update_completed(self, session_id, subject_id, seconds=None, *, now=None):
+        now = time.time() if now is None else now
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            session = self._row(db, session_id)
+            if not session or session['ended'] is None:
+                raise ValueError('Choose a completed study session.')
+            self._validate_subject(db, subject_id)
+            ended = session['ended']
+            if seconds is not None:
+                ended = _completed_interval(session['started'], seconds, now)
+                db.execute('DELETE FROM segments WHERE session_id=?', (session_id,))
+                db.execute('INSERT INTO segments(session_id,started,ended) VALUES (?,?,?)',
+                           (session_id, session['started'], ended))
+            elif subject_id == session['subject_id']:
+                return session
+            db.execute('''UPDATE sessions SET subject_id=?,ended=?,
+                          sync_revision=sync_revision+1,sync_error='',
+                          sync_state=CASE WHEN sync_state='local' THEN 'local' ELSE 'pending' END
+                          WHERE id=?''', (subject_id, ended, session_id))
+            db.execute('UPDATE subjects SET last_used=MAX(?,last_used) WHERE id=?', (ended, subject_id))
+            return self._row(db, session_id)
+
+    @staticmethod
+    def _validate_subject(db, subject_id):
+        if not db.execute('SELECT 1 FROM subjects WHERE id=?', (subject_id,)).fetchone():
+            raise ValueError('Choose a saved subject first.')
 
     def elapsed(self, session_id, now=None):
         now = time.time() if now is None else now
@@ -162,11 +217,17 @@ class StudyStore:
 
     def pending_sync(self):
         with self.connection() as db:
-            return [dict(row) for row in db.execute('''SELECT s.*, subjects.name AS subject FROM sessions s
+            return [dict(row) for row in db.execute('''SELECT s.*, subjects.name AS subject,
+                COALESCE((SELECT SUM(MAX(0, segments.ended-segments.started)) FROM segments
+                          WHERE segments.session_id=s.id),0) AS seconds FROM sessions s
                 JOIN subjects ON subjects.id=s.subject_id
                 WHERE s.ended IS NOT NULL AND s.sync_state='pending' ORDER BY s.started LIMIT 50''')]
 
-    def mark_sync(self, session_id, error=''):
+    def mark_sync(self, session_id, error='', *, revision=None):
         with self.connection() as db:
-            db.execute('UPDATE sessions SET sync_state=?, sync_error=? WHERE id=?',
-                       ('pending' if error else 'synced', error, session_id))
+            query = 'UPDATE sessions SET sync_state=?, sync_error=? WHERE id=?'
+            args = ('pending' if error else 'synced', error, session_id)
+            if revision is not None:
+                query += ' AND sync_revision=?'
+                args += (revision,)
+            db.execute(query, args)

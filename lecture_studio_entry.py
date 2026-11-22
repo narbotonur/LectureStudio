@@ -17,6 +17,9 @@ def main():
             os.environ['ANNIE_DATA_DIR'] = temporary
             from annie.release_check import run
             return run(check_secrets='--self-test-no-keychain' not in sys.argv)
+    if sys.argv[1:2] == ['--diarization-worker']:
+        from annie.diarization import worker_main
+        return worker_main(sys.argv[2:])
     if '--whisper-service' in sys.argv:
         # Console worker executable retains real stdin/stdout for JSON IPC.
         from annie.whisper_worker import clean_stray_scripts

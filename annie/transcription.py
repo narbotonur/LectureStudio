@@ -31,7 +31,10 @@ class TranscriptSegment:
         return asdict(self)
 
 
-def emit_segment(emit, start, end, text, source, backend='local', speaker=''):
+def emit_segment(emit, start, end, text, source, backend='local', speaker='', *, words=None):
     value = TranscriptSegment.create(start, end, text, source, backend, speaker)
-    emit('transcript_segment', segment=value.to_dict())
+    segment = value.to_dict()
+    if words:
+        segment['words'] = words
+    emit('transcript_segment', segment=segment)
     return value

@@ -14,11 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULES = ('__init__', 'paths', 'platform_support', 'macos_support', 'macos_audio', 'secure_storage', 'startup', 'config', 'workstation_main',
            'studio_router', 'meeting_prompt', 'calendar_service', 'moodle_calendar', 'deadlines', 'gpa_tracker', 'habits', 'planner', 'study_sessions', 'study_guide', 'updates', 'update_download', 'version',
            'meeting', 'dsp', 'audio_io', 'recording_audio', 'whisper_service', 'whisper_worker',
-           'whisper_runtime', 'whisper_models', 'whisper_events', 'release_check',
+           'whisper_runtime', 'whisper_models', 'whisper_events', 'audio_setup', 'release_check',
            'prayer_times', 'prayer_startup', 'prayer_widget_main', 'desktop_pin',
-           'transcription', 'meta_voice', 'meta_client', 'lecture_actions', 'lecture_archive', 'daily_plan',
+           'transcription', 'meta_voice', 'meta_client', 'lecture_actions', 'lecture_archive', 'diarization', 'flashcard_review', 'daily_plan',
            'lecture_reconciliation', 'obligations', 'graph_lab', 'executable_lectures', 'campus_radar', 'campus_receiver')
-GUI = ('__init__', 'design', 'meeting_window', 'studio_dock', 'week_calendar', 'study_timer', 'gpa_tracker', 'habit_tracker', 'weekly_planner', 'studio_setup', 'moodle_setup', 'deadline_inbox', 'studio_updates', 'prayer_widget', 'prayer_card', 'today', 'lecture_review', 'lecture_lab', 'campus_radar')
+GUI = ('__init__', 'design', 'meeting_window', 'studio_dock', 'week_calendar', 'study_timer', 'gpa_tracker', 'habit_tracker', 'weekly_planner', 'studio_setup', 'moodle_setup', 'deadline_inbox', 'studio_updates', 'prayer_widget', 'prayer_card', 'today', 'lecture_review', 'lecture_lab', 'lecture_library', 'audio_setup', 'flashcard_review', 'campus_radar')
 DENIED = ('token.json', 'credentials.json', 'annie_settings.json', 'study_sessions.sqlite3',
           'accounts.dpapi', 'calendar.dpapi', 'google-client.dpapi', 'moodle-calendar.dpapi', 'lecture_schedule_cache.json',
           'deadlines.json', 'weekly-plans.json', 'prayer-widget.json', 'prayer-times-cache.json')
@@ -59,6 +59,8 @@ def stage(destination):
     shutil.copy2(ROOT / 'packaging/lecture_studio.spec', target)
     shutil.copy2(ROOT / 'packaging/PRAYER_WIDGET.md', target)
     shutil.copy2(ROOT / 'packaging/UPDATES.md', target)
+    for name in ('DIARIZATION.md', 'requirements-diarization.txt'):
+        shutil.copy2(ROOT / 'packaging' / name, target)
     shutil.copy2(ROOT / 'packaging/RELEASE_NOTES.md', target)
 
 
@@ -84,7 +86,7 @@ def main():
                     '--workpath', str(build / 'work'), str(build / 'packaging/lecture_studio.spec')],
                    cwd=build, check=True)
     package = build / 'dist/LectureStudio'
-    for name in ('START_HERE.md', 'Create shortcuts.ps1', 'PRAYER_WIDGET.md'):
+    for name in ('START_HERE.md', 'Create shortcuts.ps1', 'PRAYER_WIDGET.md', 'DIARIZATION.md'):
         shutil.copy2(ROOT / 'packaging' / name, package / name)
     for path in package.rglob('*'):
         if path.is_file() and (path.name in DENIED or path.suffix in ('.wav', '.sqlite3', '.dpapi')):

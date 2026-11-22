@@ -1,4 +1,5 @@
 import datetime as dt
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
@@ -43,6 +44,22 @@ class CalendarLoadingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+
+    def test_disconnect_clears_remote_events_for_today_and_keeps_local_classes(self):
+        with tempfile.TemporaryDirectory() as root:
+            view = EliteTimetableView(root=root)
+            current = dt.datetime.combine(view.monday, dt.time(hour=10), TZ)
+            view._local_calendar.save(title='Offline class', location='', start=current,
+                                      end=current + dt.timedelta(hours=1))
+            view._cache[view.monday] = (time.monotonic(), [
+                event(current.isoformat(), (current + dt.timedelta(hours=1)).isoformat(), 'Remote class')])
+            updates = []
+            view.events_loaded.connect(updates.append)
+            with patch('annie.calendar_service.is_connected', return_value=False):
+                view._refresh()
+            self.assertEqual([item['summary'] for item in updates[-1]], ['Offline class'])
+            self.assertEqual([block.event['summary'] for block in view.grid.blocks], ['Offline class'])
+            view.close()
 
     def test_network_is_backgrounded_and_repeat_tab_visits_use_cache(self):
         view = EliteTimetableView()

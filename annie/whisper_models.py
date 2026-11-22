@@ -19,7 +19,7 @@ def complete_model(path):
         return False
 
 
-def resolve_model(name, report=None):
+def resolve_model(name, report=None, *, allow_download=True):
     from annie import config as cfg
     from faster_whisper.utils import download_model
     from huggingface_hub.constants import HF_HUB_CACHE
@@ -53,7 +53,9 @@ def resolve_model(name, report=None):
             report(f'Using cached Whisper ({name}); no download needed')
             return str(Path(candidate).resolve())
 
-    report(f'Downloading Whisper ({name}) for first use. Large models can take several minutes; audio capture has not started')
+    if not allow_download:
+        return None
+    report(f'Downloading Whisper ({name}). Large models can take several minutes')
     candidate = download_model(name, cache_dir=str(cache_dir))
     if not complete_model(candidate):
         raise RuntimeError('Whisper download is incomplete. Check your connection and available disk space, then retry.')

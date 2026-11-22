@@ -211,6 +211,10 @@ class LabStore:
                        '(id TEXT PRIMARY KEY, lab_id TEXT NOT NULL REFERENCES executable_labs(id), '
                        'created TEXT NOT NULL, payload TEXT NOT NULL)')
 
+            db.execute('CREATE TABLE IF NOT EXISTS executable_lab_variants '
+                       '(lab_id TEXT NOT NULL, name TEXT NOT NULL, graph TEXT NOT NULL, '
+                       'weighted INTEGER NOT NULL, PRIMARY KEY (lab_id, name))')
+
     @contextmanager
     def connection(self):
         db = sqlite3.connect(str(self.path), timeout=5)
@@ -252,6 +256,24 @@ class LabStore:
         with self.connection() as db:
             rows = db.execute('SELECT * FROM executable_labs ORDER BY created DESC,id').fetchall()
         return [self._decode(row) for row in rows]
+
+    def save_variant(self, lab_id, name, graph, weighted):
+        from annie.graph_lab import validate_graph
+        name = _text(name, 100, 'Variant name')
+        graph = validate_graph(graph)
+        self.get(lab_id)
+        with self.connection() as db:
+            db.execute('INSERT INTO executable_lab_variants VALUES (?,?,?,?) '
+                       'ON CONFLICT(lab_id,name) DO UPDATE SET graph=excluded.graph, weighted=excluded.weighted',
+                       (lab_id, name, json.dumps(graph, ensure_ascii=False), int(bool(weighted))))
+
+    def variants(self, lab_id):
+        from annie.graph_lab import validate_graph
+        with self.connection() as db:
+            return {name: (validate_graph(json.loads(raw)), bool(weighted))
+                    for name, raw, weighted in db.execute(
+                        'SELECT name,graph,weighted FROM executable_lab_variants WHERE lab_id=? ORDER BY name',
+                        (lab_id,))}
 
     def record_attempt(self, lab_id, *, graph, weighted, predicted_cost=None,
                        predict_no_path=False, action_id=''):

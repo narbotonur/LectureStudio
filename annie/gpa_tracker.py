@@ -83,6 +83,11 @@ class GpaStore:
                 CREATE INDEX IF NOT EXISTS assessment_course
                     ON assessments(course_id, position);
             ''')
+            course_columns = {row['name'] for row in db.execute('PRAGMA table_info(courses)')}
+            if 'semester' not in course_columns:
+                db.execute("ALTER TABLE courses ADD COLUMN semester TEXT NOT NULL DEFAULT ''")
+            if 'archived' not in course_columns:
+                db.execute("ALTER TABLE courses ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
             columns = {row['name'] for row in db.execute('PRAGMA table_info(assessments)')}
             if 'score_input' not in columns:
                 db.execute("ALTER TABLE assessments ADD COLUMN score_input TEXT NOT NULL DEFAULT ''")
@@ -105,38 +110,55 @@ class GpaStore:
             raise ValueError('Course was not found.')
         return dict(row)
 
-    def courses(self):
+    def courses(self, semester=None, *, include_archived=False):
         with self.connection() as db:
-            return [dict(row) for row in db.execute('SELECT * FROM courses ORDER BY name_key')]
+            return [dict(row) for row in db.execute(
+                'SELECT * FROM courses WHERE (? IS NULL OR semester=?) AND (? OR archived=0) ORDER BY name_key',
+                (semester, semester, include_archived))]
 
-    def add_course(self, name, credits=5, target_percent=85, now=None):
+    def semesters(self):
+        with self.connection() as db:
+            return [row[0] for row in db.execute('SELECT DISTINCT semester FROM courses ORDER BY semester')]
+
+    @staticmethod
+    def _course_key(name, semester):
+        return f'{len(semester)}:{semester.casefold()}:{name.casefold()}' if semester else name.casefold()
+
+    def add_course(self, name, credits=5, target_percent=85, now=None, *, semester=''):
         name = _name(name, 'course name')
+        semester = _name(semester, 'semester') if semester else ''
         credits = _number(credits, .5, 30, 'Credits')
         target = _number(target_percent, 50, 100, 'Target percentage')
         try:
             with self.connection() as db:
                 course_id = uuid.uuid4().hex
-                db.execute('INSERT INTO courses VALUES (?,?,?,?,?,?)',
-                           (course_id, name, name.casefold(), credits, target,
-                            time.time() if now is None else now))
+                db.execute('INSERT INTO courses (id,name,name_key,credits,target_percent,updated,semester) VALUES (?,?,?,?,?,?,?)',
+                           (course_id, name, self._course_key(name, semester), credits, target,
+                            time.time() if now is None else now, semester))
                 return self._course(db, course_id)
         except sqlite3.IntegrityError:
-            raise ValueError('A course with this name already exists.') from None
+            raise ValueError('A course with this name already exists in the semester.') from None
 
-    def update_course(self, course_id, name, credits, target_percent, now=None):
+    def update_course(self, course_id, name, credits, target_percent, now=None, *, semester=None):
         name = _name(name, 'course name')
         credits = _number(credits, .5, 30, 'Credits')
         target = _number(target_percent, 50, 100, 'Target percentage')
         try:
             with self.connection() as db:
-                self._course(db, course_id)
-                db.execute('''UPDATE courses SET name=?,name_key=?,credits=?,
-                              target_percent=?,updated=? WHERE id=?''',
-                           (name, name.casefold(), credits, target,
-                            time.time() if now is None else now, course_id))
+                course = self._course(db, course_id)
+                semester = course['semester'] if semester is None else _name(semester, 'semester') if semester else ''
+                db.execute("""UPDATE courses SET name=?,name_key=?,credits=?,
+                              target_percent=?,updated=?,semester=? WHERE id=?""",
+                           (name, self._course_key(name, semester), credits, target,
+                            time.time() if now is None else now, semester, course_id))
                 return self._course(db, course_id)
         except sqlite3.IntegrityError:
-            raise ValueError('A course with this name already exists.') from None
+            raise ValueError('A course with this name already exists in the semester.') from None
+
+    def archive_course(self, course_id, archived=True):
+        with self.connection() as db:
+            self._course(db, course_id)
+            db.execute('UPDATE courses SET archived=? WHERE id=?', (bool(archived), course_id))
 
     def delete_course(self, course_id):
         with self.connection() as db:
@@ -204,11 +226,39 @@ class GpaStore:
                 raise ValueError('Grade component was not found.')
         return score
 
-    def what_if(self, course_id, remaining_score=80):
+    def set_scores(self, scores):
+        scores = [(identity, value, parse_score(value)) for identity, value in scores]
+        with self.connection() as db:
+            for identity, value, parsed in scores:
+                changed = db.execute('UPDATE assessments SET score=?,score_input=? WHERE id=?',
+                                     (parsed, _score_input(value, parsed), identity)).rowcount
+                if not changed:
+                    raise ValueError('Grade component was not found.')
+
+    def add_weight_template(self, course_id, items):
+        values = [self._assessment_values(name, weight, None) for name, weight in items]
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self._course(db, course_id)
+            self._check_total(db, course_id, sum(item[1] for item in values))
+            position = db.execute('SELECT COALESCE(MAX(position),-1)+1 FROM assessments WHERE course_id=?',
+                                  (course_id,)).fetchone()[0]
+            db.executemany('INSERT INTO assessments (id,course_id,name,weight,score,position,score_input) VALUES (?,?,?,?,?,?,?)',
+                           [(uuid.uuid4().hex, course_id, name, weight, score, position + offset, '')
+                            for offset, (name, weight, score) in enumerate(values)])
+
+    def what_if(self, course_id, remaining_score=80, component_scores=None):
         """Project a final percentage without writing hypothetical grades."""
         score = _number(remaining_score, 0, 100, 'Hypothetical remaining average')
         current = self.summary(course_id)
+        overrides = component_scores or {}
+        pending = {item['id']: item for item in current['items'] if item['score'] is None}
+        if set(overrides) - set(pending):
+            raise ValueError('Only ungraded components can have a scenario score.')
         projected = current['earned_points'] + current['remaining_weight'] * score / 100
+        for identity, value in overrides.items():
+            component_score = _number(value, 0, 100, 'Hypothetical score')
+            projected += pending[identity]['weight'] * (component_score - score) / 100
         letter, points = letter_for_percent(projected)
         return {'projected_percent': projected, 'projected_letter': letter,
                 'projected_gpa_points': points, 'remaining_score': score,
@@ -246,8 +296,8 @@ class GpaStore:
                 'unconfigured_weight': max(0, 100 - total_weight),
                 'target_letter': target_letter, 'target_gpa_points': target_points}
 
-    def semester_summary(self):
-        summaries = [self.summary(course['id']) for course in self.courses()]
+    def semester_summary(self, semester=None, *, include_archived=False):
+        summaries = [self.summary(course['id']) for course in self.courses(semester, include_archived=include_archived)]
         estimated = [item for item in summaries if item['current_percent'] is not None]
         credits = sum(item['credits'] for item in summaries)
         graded_credits = sum(item['credits'] for item in estimated)

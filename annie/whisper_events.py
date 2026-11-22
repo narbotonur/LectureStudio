@@ -42,6 +42,8 @@ def consume_session(worker, **options):
             elif kind == 'recording_saved':
                 worker.recording_path = data['path']
                 worker.recording_saved.emit(data['path'])
+            elif kind == 'capture_started' and hasattr(worker, 'capture_started'):
+                worker.capture_started.emit()
             elif kind == 'capture_stopped' and hasattr(worker, 'capture_finished'):
                 worker.capture_finished.emit()
             elif kind == 'metrics':

@@ -36,6 +36,23 @@ class ObligationStoreTests(unittest.TestCase):
         pending = self.store.propose(proposal())
         return self.store.approve(pending['id'], expected_fingerprint='fictional-snapshot-1')
 
+    def test_manual_correction_updates_projection_and_preserves_evidence(self):
+        first = self.first()
+        inbox = DeadlineStore(self.root)
+        old = inbox.load()[0]
+        inbox.set_status(old['id'], 'done')
+        revision = self.store.edit_assignment(first['assignment_id'], 1, title='Edited label',
+                                              course='CSCI 232', due_at=NEW_DUE)
+        self.assertEqual(revision, 2)
+        current = inbox.load()[0]
+        self.assertEqual((current['id'], current['due_at'], current['status']), (old['id'], NEW_DUE, 'done'))
+        self.assertIn('November 3', current['evidence'])
+        self.assertEqual(len(self.store.history(first['assignment_id'])), 2)
+        self.assertEqual(len(self.store.list_proposals('approved')), 1)
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            self.store.edit_assignment(first['assignment_id'], 1, title=old['title'],
+                                       course=old['course'], due_at=OLD_DUE)
+
     def correction(self, first, **updates):
         current = self.store.list_current()[0]
         data = proposal(assignment_id=first['assignment_id'], expected_revision=current['revision'],

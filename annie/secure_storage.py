@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import sys
 
 MAGIC = b'ANNIE-DPAPI-1\n'
@@ -35,7 +36,16 @@ def atomic_write(path, data):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        for delay in (0.01, 0.02, 0.04, 0.08, 0.16, None):
+            try:
+                os.replace(temporary, path)
+            except PermissionError as exc:
+                # Windows readers and virus scanners can temporarily deny rename.
+                if delay is None or getattr(exc, 'winerror', None) not in (5, 32, 33):
+                    raise
+                time.sleep(delay)
+            else:
+                break
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

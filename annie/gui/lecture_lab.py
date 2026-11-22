@@ -10,6 +10,8 @@ from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFrame,
     QHBoxLayout, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
     QSplitter, QTextEdit, QVBoxLayout, QWidget)
 
+from PyQt5.QtWidgets import QInputDialog, QLineEdit, QSplitter
+
 from annie.gui.design import ACCENT, BACKGROUND, BORDER, MUTED, SURFACE, TEXT, label, role
 from annie.lecture_actions import normalize_segments, transcript_fingerprint
 
@@ -193,6 +195,8 @@ class LectureLabPage(QWidget):
         endpoints = QHBoxLayout()
         endpoints.addWidget(label('Start'))
         self.start_combo, self.target_combo = QComboBox(), QComboBox()
+        for combo in (self.start_combo, self.target_combo):
+            combo.setEditable(True)
         endpoints.addWidget(self.start_combo, 1)
         endpoints.addWidget(label('Target'))
         endpoints.addWidget(self.target_combo, 1)
@@ -200,6 +204,16 @@ class LectureLabPage(QWidget):
         self.weighted.toggled.connect(self.apply_edits)
         endpoints.addWidget(self.weighted)
         experiment_box.addLayout(endpoints)
+        node_row = QHBoxLayout()
+        node_row.addWidget(label('Nodes'))
+        self.nodes_input = QLineEdit(placeholderText='A B C')
+        self.nodes_input.setAccessibleName('Node IDs, separated by spaces')
+        node_row.addWidget(self.nodes_input, 1)
+        self.directed = QCheckBox('Directed')
+        node_row.addWidget(self.directed)
+        experiment_box.addLayout(node_row)
+        self.nodes_input.textChanged.connect(self._mark_dirty)
+        self.directed.toggled.connect(self._mark_dirty)
         self.edges_input = QTextEdit()
         self.edges_input.setMaximumHeight(85)
         self.edges_input.setAccessibleName('Edges: one source target weight per line')
@@ -213,11 +227,29 @@ class LectureLabPage(QWidget):
         self.reset_graph_button.clicked.connect(self.restore_graph)
         apply_row.addWidget(self.reset_graph_button)
         experiment_box.addLayout(apply_row)
+        variants = QHBoxLayout()
+        save_variant = QPushButton('Save variant…')
+        save_variant.clicked.connect(self._save_variant)
+        open_variant = QPushButton('Open variant…')
+        open_variant.clicked.connect(self._open_variant)
+        variants.addWidget(save_variant)
+        variants.addWidget(open_variant)
+        experiment_box.addLayout(variants)
         self.assumption_label = label('', 'muted')
         self.assumption_label.setWordWrap(True)
         experiment_box.addWidget(self.assumption_label)
         self.canvas = GraphCanvas()
-        experiment_box.addWidget(self.canvas)
+        self.graph_source = QTextEdit()
+        self.graph_source.setReadOnly(True)
+        self.graph_source.setAccessibleName('Source evidence beside the experiment')
+        self.graph_source.setMinimumWidth(270)
+        graph_area = QSplitter(Qt.Horizontal)
+        graph_area.addWidget(self.canvas)
+        graph_area.addWidget(self.graph_source)
+        graph_area.setStretchFactor(0, 3)
+        graph_area.setStretchFactor(1, 2)
+        self.graph_source.setVisible(False)
+        experiment_box.addWidget(graph_area)
         controls = QHBoxLayout()
         self.prev_button, self.next_button = QPushButton('Previous'), QPushButton('Next step')
         self.prev_button.clicked.connect(lambda: self.slider.setValue(self.slider.value()-1))
@@ -363,7 +395,13 @@ class LectureLabPage(QWidget):
         for ref in spec['evidence']:
             lines += [f'{ref["source"]} · {_clock(ref["start"])}–{_clock(ref["end"])}', ref['quote'], '']
         self.evidence.setPlainText('\n'.join(lines))
+        self.graph_source.setPlainText(self.evidence.toPlainText())
         self.evidence_button.setEnabled(bool(spec['evidence']))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'graph_source'):
+            self.graph_source.setVisible(self.width() >= 860)
 
     def _review_toggled(self, checked):
         self.use_button.setEnabled(bool(self._spec) and checked and self.lab_id is None and self.store is not None)
@@ -390,21 +428,50 @@ class LectureLabPage(QWidget):
     def restore_graph(self):
         if not self._spec or not self.lab_id:
             return
-        graph = copy.deepcopy(self._spec['graph'])
-        self.start_combo.clear()
-        self.target_combo.clear()
-        self.start_combo.addItems(graph['nodes'])
-        self.target_combo.addItems(graph['nodes'])
-        self.start_combo.setCurrentText(graph['start'])
-        self.target_combo.setCurrentText(graph['target'])
+        self._display_graph(copy.deepcopy(self._spec['graph']), False)
+        self.status.setText('Original graph restored with equal effective edge weights.')
+
+    def _display_graph(self, graph, weighted):
+        self.nodes_input.setText(' '.join(graph['nodes']))
+        self.directed.setChecked(graph['directed'])
+        for combo, key in ((self.start_combo, 'start'), (self.target_combo, 'target')):
+            combo.clear()
+            combo.addItems(graph['nodes'])
+            combo.setCurrentText(graph[key])
         self.edges_input.setPlainText('\n'.join(f"{e['source']} {e['target']} {e['weight']!r}" for e in graph['edges']))
         self._graph = graph
         self.weighted.blockSignals(True)
-        self.weighted.setChecked(False)
+        self.weighted.setChecked(weighted)
         self.weighted.blockSignals(False)
         self._dirty = False
         self.recompute()
-        self.status.setText('Original graph restored with equal effective edge weights.')
+
+    def _save_variant(self):
+        if self._dirty or not self._graph or not self.lab_id:
+            self.status.setText('Apply graph edits before saving a variant.')
+            return
+        name, ok = QInputDialog.getText(self, 'Save variant', 'Name')
+        if ok and name.strip():
+            try:
+                self.store.save_variant(self.lab_id, name, self._graph, self.weighted.isChecked())
+                self.status.setText('Variant saved locally.')
+            except (ValueError, sqlite3.Error) as exc:
+                self.status.setText(str(exc))
+
+    def _open_variant(self):
+        if not self.lab_id:
+            return
+        try:
+            items = self.store.variants(self.lab_id)
+            if not items:
+                self.status.setText('This lab has no saved variants.')
+                return
+            name, ok = QInputDialog.getItem(self, 'Open variant', 'Variant', list(items), 0, False)
+            if ok:
+                self._display_graph(*items[name])
+                self.status.setText(f'Opened variant {name}.')
+        except (ValueError, sqlite3.Error) as exc:
+            self.status.setText(str(exc))
 
     def apply_edits(self, *_):
         if not self.lab_id or not self._spec:
@@ -421,8 +488,8 @@ class LectureLabPage(QWidget):
                 if len(fields) != 3:
                     raise ValueError('Use one edge per line: source target weight (for example A C 10).')
                 edges.append({'source': fields[0], 'target': fields[1], 'weight': float(fields[2])})
-            graph = {**self._spec['graph'], 'edges': edges, 'start': self.start_combo.currentText(),
-                     'target': self.target_combo.currentText()}
+            graph = {'nodes': self.nodes_input.text().split(), 'directed': self.directed.isChecked(),
+                     'edges': edges, 'start': self.start_combo.currentText(), 'target': self.target_combo.currentText()}
             self._graph = validate_graph(graph)
             self._dirty = False
             self.recompute()

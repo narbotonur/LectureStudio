@@ -38,7 +38,7 @@ HALLUCINATION_PATTERNS = [
 def clean_stray_scripts(text: str) -> str:
     if not text:
         return ""
-    cleaned = re.sub(r'[^a-zA-Zа-яА-ЯёЁ0-9\s.,!?:;\-\'\"()\[\]{}+=/*%<>]', '', text)
+    cleaned = re.sub(r'[^a-zA-Zа-яА-ЯёЁӘәҒғҚқҢңӨөҰұҮүҺһІі0-9\s.,!?:;\-\'\"()\[\]{}+=/*%<>]', '', text)
     cleaned = re.sub(r'<[^>]+>|\[[^\]]+\]', '', cleaned)
     cleaned = re.sub(r'(\b\w+\b)(?:\s+\1){2,}', r'\1', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'(\b\w+\s+\w+\b)(?:\s+\1){2,}', r'\1', cleaned, flags=re.IGNORECASE)

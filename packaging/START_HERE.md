@@ -17,7 +17,7 @@ used for Russian/Kazakh language hints. Meta account access and credits are requ
 
 Get your own Gemini API key at https://aistudio.google.com/apikey and enter it in setup.
 Choose a Gemini model available to your account. Cloud AI sends the lecture text/images/materials you ask it to process to Google; your account's quotas and any charges apply.
-Local Whisper transcription runs on your PC. Its first use downloads the selected model from Hugging Face; allow time and disk space. CPU mode works without NVIDIA/CUDA. Setup never records audio. After you explicitly start recording, audio is saved locally while the model prepares.
+Local Whisper transcription runs on your PC. Open **Test audio** in the recording bar to check the selected input with a five-second sample. The **Local models** tab prepares Whisper ahead of time and installs the optional speaker models. CPU mode works without NVIDIA/CUDA. If Whisper still needs to prepare when you start a lecture, Studio saves your audio locally in the meantime.
 
 Automatic legacy note generation is off by default. Create notes when needed from
 Lecture, or inspect the transcript and Review actions immediately. Saved transcripts

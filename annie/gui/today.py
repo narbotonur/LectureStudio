@@ -1,19 +1,23 @@
 """Daily workflow assembled from local trackers and reviewed lecture actions."""
 import datetime as dt
 from pathlib import Path
+import sqlite3
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QScrollArea
+from PyQt5.QtCore import QDateTime, Qt, pyqtSignal
+from PyQt5.QtWidgets import (QCheckBox, QDateTimeEdit, QDialog, QFormLayout, QFrame, QHBoxLayout,
+                            QLineEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
 from annie.daily_plan import DailyPlanStore, suggest_today
-from annie.gui.design import label, role
+from annie.gui.design import apply_theme, label, role
 from annie.planner import TZ
 
 
 class TodayPage(QWidget):
     navigate = pyqtSignal(int)
+    library_requested = pyqtSignal()
     study_requested = pyqtSignal(str)
     lab_requested = pyqtSignal(str)
+    inbox_requested = pyqtSignal()
 
     def __init__(self, parent=None, root=None):
         super().__init__(parent)
@@ -25,6 +29,9 @@ class TodayPage(QWidget):
         layout.setContentsMargins(0, 0, 6, 0)
         top = QHBoxLayout()
         top.addWidget(label('Today', 'title'), 1)
+        add = role(QPushButton('Add study block'), 'primary')
+        add.clicked.connect(lambda: self._edit_block())
+        top.addWidget(add)
         refresh = QPushButton('Refresh')
         refresh.clicked.connect(self.reload)
         top.addWidget(refresh)
@@ -32,10 +39,15 @@ class TodayPage(QWidget):
         self.date_label = label('', 'muted')
         layout.addWidget(self.date_label)
         links = QHBoxLayout()
-        for text, index in [('Record a lecture', 0), ('Review findings', 10), ('Schedule', 4), ('Study timer', 5)]:
+        for text, open_page in (('Record or import', lambda: self.navigate.emit(0)),
+                                ('Lecture library', self.library_requested.emit),
+                                ('Study timer', lambda: self.navigate.emit(5))):
             button = QPushButton(text)
-            button.clicked.connect(lambda checked=False, i=index: self.navigate.emit(i))
+            button.clicked.connect(open_page)
             links.addWidget(button)
+        inbox = QPushButton('Deadlines')
+        inbox.clicked.connect(self.inbox_requested.emit)
+        links.addWidget(inbox)
         layout.addLayout(links)
         scroll = QScrollArea()
         scroll.setFrameShape(QFrame.NoFrame)
@@ -64,13 +76,15 @@ class TodayPage(QWidget):
     def reload(self):
         while self.body.count():
             item = self.body.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget:
+                widget.hide()
+                widget.deleteLater()
         now = self.clock()
         self.date_label.setText(f'{now:%A, %d %B} · UTC+05')
         try:
             self._populate(now)
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, sqlite3.Error) as exc:
             self.feedback.setText(str(exc))
         self.body.addStretch()
 
@@ -88,12 +102,14 @@ class TodayPage(QWidget):
         radar = RadarStore(root)
         unread = len(radar.events(unread_only=True))
         radar_button = QPushButton(f'Campus Radar · {unread} unreviewed change(s)' if unread else 'Campus Radar · check source coverage')
+        radar_button.setMinimumHeight(32)
         radar_button.clicked.connect(lambda: self.navigate.emit(12))
         self.body.addWidget(radar_button)
         obligations = ObligationStore(root)
         pending_count = len(obligations.list_proposals('pending')) + len(ActionStore(root).list_actions('pending'))
         if pending_count:
             review = role(QPushButton(f'{pending_count} finding(s) need review — check assignments and deadline changes'), 'primary')
+            review.setMinimumHeight(32)
             review.clicked.connect(lambda: self.navigate.emit(10))
             self.body.addWidget(review)
         self.body.addWidget(self._text('Up next', 'section'))
@@ -103,7 +119,7 @@ class TodayPage(QWidget):
             if interval and interval[1] > now and interval[0].date() == now.date() and event.get('status') != 'cancelled':
                 upcoming.append((interval[0], event.get('summary', 'Class')))
         if upcoming:
-            for start, title in sorted(upcoming)[:3]:
+            for start, title in sorted(upcoming)[:1]:
                 self.body.addWidget(self._text(f'{start:%H:%M} · {title}'))
         else:
             self.body.addWidget(self._text('No upcoming classes in the loaded calendar. Open Schedule to refresh.', 'muted'))
@@ -124,6 +140,7 @@ class TodayPage(QWidget):
         gpa = GpaStore(root / 'gpa_tracker.sqlite3')
         courses = [gpa.summary(item['id']) for item in gpa.courses()]
         prayers = {}
+        prayer_source = ''
         try:
             from annie.prayer_times import PrayerStore
             prayer_store = PrayerStore(root)
@@ -131,6 +148,10 @@ class TodayPage(QWidget):
             day = next((entry for entry in (cache or {}).get('days', [])
                         if entry.get('date') == now.date().isoformat()), {})
             prayers = day.get('times', {})
+            if prayers:
+                fetched = (cache.get('fetched_at') or '')[:10]
+                provider = cache.get('source') or 'Prayer calendar'
+                prayer_source = f"{provider} · {day['date']}" + (f' · cached {fetched}' if fetched else '')
         except (TypeError, AttributeError, ValueError):
             pass
         suggestions, warnings = suggest_today(courses, deadlines, actions.approved_tasks(), self.events,
@@ -141,8 +162,11 @@ class TodayPage(QWidget):
             box = QVBoxLayout(card)
             box.addWidget(self._text(item['title'], 'section'))
             when = dt.datetime.fromisoformat(item['start']).strftime('%H:%M') if item.get('start') else 'Choose a time'
-            box.addWidget(self._text(f"{when} · {item['minutes']} min · {item['status']}"))
+            pin = ' · Pinned' if item.get('pinned') else ''
+            box.addWidget(self._text(f"{when} · {item['minutes']} min{pin}"))
             box.addWidget(self._text(item['reason'], 'muted'))
+            if item.get('conflict'):
+                box.addWidget(self._text(item['conflict'], 'section'))
             buttons = QHBoxLayout()
             if item['status'] == 'suggested':
                 accept = QPushButton('Add to today')
@@ -155,8 +179,8 @@ class TodayPage(QWidget):
                 done = QPushButton('Done')
                 done.clicked.connect(lambda checked=False, value=item: self._complete(value))
                 buttons.addWidget(done)
-            move = QPushButton('Tomorrow')
-            move.clicked.connect(lambda checked=False, value=item: self._decide(value, 'tomorrow'))
+            move = QPushButton('Edit / move')
+            move.clicked.connect(lambda checked=False, value=item: self._edit_block(value))
             skip = QPushButton('Skip')
             skip.clicked.connect(lambda checked=False, value=item: self._decide(value, 'skipped'))
             buttons.addWidget(move)
@@ -169,23 +193,94 @@ class TodayPage(QWidget):
                     lab.clicked.connect(lambda checked=False, identity=item['action_id']: self.lab_requested.emit(identity))
                     box.addWidget(lab)
             self.body.addWidget(card)
+        closed = {item.get('origin_assignment_id') or item['id'] for item in deadlines
+                  if item.get('status', 'open') != 'open'}
+        live_actions = {item['id'] for item in actions.approved_tasks()}
+        missed = [item for item in self.store.missed(now.date())
+                  if item.get('deadline_id') not in closed
+                  and (not item.get('action_id') or item['action_id'] in live_actions)]
+        if missed:
+            self.body.addWidget(self._text('Unfinished plans', 'section'))
+            for item in missed:
+                move = QPushButton(f"Reschedule {item['title']} · {item['day']}")
+                move.clicked.connect(lambda checked=False, value=item: self._edit_block(value))
+                self.body.addWidget(move)
         if not suggestions:
             self.body.addWidget(self._text('No additional study block fits today. Use Review to keep track of approved lecture actions.'
                                           if actions.approved_tasks() or courses else
                                           'Approve a lecture action in Review or add a course in Academics.', 'muted'))
         self.feedback.setText(' '.join(warnings) or 'Suggested times use your loaded calendar and cached prayer times. Accepted actions stay local.')
-        if not prayers:
+        if prayer_source:
+            self.feedback.setText(self.feedback.text() + f' Prayer times: {prayer_source}.')
+        else:
             self.feedback.setText(self.feedback.text() + ' Prayer times are not cached for today; check them before accepting a slot.')
         self.body.addWidget(self._text('Daily routines', 'section'))
         manage = QPushButton('Manage routines')
+        manage.setMinimumHeight(32)
         manage.clicked.connect(lambda: self.navigate.emit(7))
         self.body.addWidget(manage)
         routines = CompactRoutineWidget(store=HabitStore(root / 'habits.sqlite3'))
         self.body.addWidget(routines)
 
     def _decide(self, item, status):
-        self.store.decide(item, status)
+        try:
+            self.store.decide(item, status)
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            self.feedback.setText(str(exc))
+            return
         self.reload()
+
+    def _edit_block(self, item=None):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Edit study block' if item else 'Add study block')
+        form = QFormLayout(dialog)
+        title = QLineEdit(item.get('title', '') if item else '')
+        title.setMaxLength(160)
+        course = QLineEdit(item.get('course', '') if item else '')
+        course.setMaxLength(100)
+        start = QDateTimeEdit()
+        start.setCalendarPopup(True)
+        start.setDisplayFormat('dd MMM yyyy HH:mm')
+        now = self.clock()
+        initial = now + dt.timedelta(minutes=10)
+        if item and item.get('start') and item['day'] >= now.date().isoformat():
+            initial = dt.datetime.fromisoformat(item['start']).astimezone(TZ)
+        start.setDateTime(QDateTime.fromString(initial.strftime('%Y-%m-%dT%H:%M'), 'yyyy-MM-ddTHH:mm'))
+        minutes = QSpinBox()
+        minutes.setRange(1, 720)
+        minutes.setSuffix(' min')
+        minutes.setValue(item['minutes'] if item else 25)
+        pinned = QCheckBox('Pin in the weekly plan')
+        pinned.setChecked(bool(item and item.get('pinned')))
+        form.addRow('Title', title)
+        form.addRow('Course', course)
+        form.addRow('Starts (UTC+05)', start)
+        form.addRow('Duration', minutes)
+        form.addRow(pinned)
+        message = label('')
+        message.setWordWrap(True)
+        form.addRow(message)
+        actions = QHBoxLayout()
+        save = role(QPushButton('Save study block'), 'primary')
+        cancel = QPushButton('Cancel')
+        cancel.clicked.connect(dialog.reject)
+        actions.addWidget(cancel)
+        actions.addWidget(save)
+        form.addRow(actions)
+
+        def commit():
+            try:
+                self.store.schedule(item, title=title.text(), course=course.text(),
+                                    start=start.dateTime().toString('yyyy-MM-ddTHH:mm') + '+05:00',
+                                    minutes=minutes.value(), pinned=pinned.isChecked())
+            except (ValueError, OSError, sqlite3.Error) as exc:
+                message.setText(str(exc))
+                return
+            dialog.accept()
+        save.clicked.connect(commit)
+        apply_theme(dialog)
+        if dialog.exec_() == QDialog.Accepted:
+            self.reload()
 
     def _complete(self, item):
         if item.get('action_id'):

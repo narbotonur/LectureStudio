@@ -312,6 +312,8 @@ def record_session(options, model, stop, emit, clean_text, capture=capture_audio
                     continue
                 spool.append(data)
                 frames += 1
+                if frames == 1:
+                    emit('capture_started')
                 if frames % 3 == 0:
                     samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
                     rms = float(np.sqrt(np.mean(samples ** 2) + 1e-6))
@@ -334,7 +336,6 @@ def record_session(options, model, stop, emit, clean_text, capture=capture_audio
     writer = threading.Thread(target=write_recording, name='lecture-writer')
     recorder = threading.Thread(target=acquire, name='lecture-capture')
     emit('recording_saved', path=str(spool.path))
-    emit('status', text='Recording lecture...')
     writer.start()
     recorder.start()
     session_started = time.monotonic()
@@ -409,7 +410,7 @@ def file_session(options, model, stop, emit, clean_text):
         return transcribe_file(path, model, stop, emit)
     started = time.monotonic()
     first_text = False
-    segments, info = model.transcribe(path, beam_size=2, vad_filter=True,
+    segments, info = model.transcribe(path, beam_size=2, vad_filter=True, word_timestamps=True,
                                       initial_prompt=options.get('subject_context') or None,
                                       language=options.get('language') or None)
     for segment in segments:
@@ -421,7 +422,10 @@ def file_session(options, model, stop, emit, clean_text):
                 first_text = True
                 emit('metrics', first_text_seconds=time.monotonic() - started)
             if segment.end > segment.start:
-                emit_segment(emit, segment.start, segment.end, text, Path(path).name)
+                words = [{'start': word.start, 'end': word.end, 'text': word.word}
+                         for word in (getattr(segment, 'words', None) or ())
+                         if word.start is not None and word.end is not None and word.end > word.start]
+                emit_segment(emit, segment.start, segment.end, text, Path(path).name, words=words)
             start = f'{int(segment.start // 60):02d}:{int(segment.start % 60):02d}'
             end = f'{int(segment.end // 60):02d}:{int(segment.end % 60):02d}'
             emit('transcript', text=f'[{start} → {end}] {text}\n')
@@ -484,6 +488,19 @@ def serve(clean_text, commands_input=None, cache=None):
                 result['cancelled'] = True
                 continue
             name = options.get('model_name', 'small')
+            if options.get('mode') == 'prepare':
+                from annie.whisper_models import preparation_status, resolve_model
+                with preparation_status(name, emit) as report:
+                    result['result'] = resolve_model(name, report, allow_download=options.get('download', False))
+                continue
+            if options.get('mode') == 'input_test':
+                from annie.audio_setup import SetupCancelled, record_input_sample
+                try:
+                    result['result'] = record_input_sample(options.get('device', 'default'), options['sample_path'],
+                        stop, lambda elapsed, peak: emit('input_test_progress', elapsed=elapsed, peak=peak))
+                except SetupCancelled:
+                    result['cancelled'] = True
+                continue
             model = None
             if options.get('transcription_backend', 'local') == 'meta_voice':
                 from annie.meta_voice import MetaVoiceBackend, VoiceUnavailable

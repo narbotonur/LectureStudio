@@ -16,7 +16,7 @@ _INBOX_LOCKS = {}
 
 
 def _inbox_lock(path):
-    """Serialize in-process Inbox writers, including different store instances."""
+    """Serialize in-process Inbox file access across store instances."""
     key = str(Path(path).resolve()).casefold()
     with _LOCKS_GUARD:
         return _INBOX_LOCKS.setdefault(key, threading.RLock())
@@ -131,17 +131,18 @@ class DeadlineStore:
         self.path = Path(root) / 'deadlines.json'
 
     def load(self):
-        if not self.path.exists():
-            return []
-        try:
-            data = json.loads(self.path.read_text(encoding='utf-8'))
-            if (not isinstance(data, dict) or data.get('version') != 1
-                    or not isinstance(data.get('deadlines'), list)
-                    or any(not isinstance(item, dict) for item in data['deadlines'])):
-                raise ValueError
-            return data['deadlines']
-        except Exception:
-            raise ValueError('The saved deadline inbox is unreadable. Your file was left unchanged.') from None
+        with _inbox_lock(self.path):
+            if not self.path.exists():
+                return []
+            try:
+                data = json.loads(self.path.read_text(encoding='utf-8'))
+                if (not isinstance(data, dict) or data.get('version') != 1
+                        or not isinstance(data.get('deadlines'), list)
+                        or any(not isinstance(item, dict) for item in data['deadlines'])):
+                    raise ValueError
+                return data['deadlines']
+            except Exception:
+                raise ValueError('The saved deadline inbox is unreadable. Your file was left unchanged.') from None
 
     def add(self, course, source_name, candidates):
         with _inbox_lock(self.path):
@@ -149,23 +150,121 @@ class DeadlineStore:
 
     def _add_locked(self, course, source_name, candidates):
         current = self.load()
-        keys = {(item.get('title', '').casefold(), item.get('due_at')) for item in current}
+        course = _clean(course, 100)
+        keys = {(item.get('course', '').casefold(), item.get('title', '').casefold(),
+                 item.get('due_at')) for item in current}
         added = 0
         now = dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')
         for candidate in candidates:
-            key = (candidate.title.casefold(), candidate.due_at)
+            key = (course.casefold(), candidate.title.casefold(), candidate.due_at)
             if key in keys:
                 continue
-            current.append({'id': uuid.uuid4().hex, 'course': _clean(course, 100),
+            current.append({'id': uuid.uuid4().hex, 'course': course,
                             'source_name': _clean(source_name, 200),
                             **asdict(candidate), 'status': 'open', 'created_at': now})
             keys.add(key)
             added += 1
         if added:
-            payload = json.dumps({'version': 1, 'deadlines': current}, ensure_ascii=False,
-                                 indent=2).encode('utf-8')
-            atomic_write(self.path, payload)
+            self._write(current)
         return added
+
+    def _write(self, items):
+        atomic_write(self.path, json.dumps({'version': 1, 'deadlines': items},
+                                          ensure_ascii=False, indent=2).encode('utf-8'))
+
+    @staticmethod
+    def validated_edit(title, course, due_at):
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 160:
+            raise ValueError('Enter a deadline title up to 160 characters.')
+        if not isinstance(course, str) or len(course.strip()) > 100:
+            raise ValueError('Enter a course name up to 100 characters.')
+        try:
+            parsed = dt.datetime.fromisoformat(due_at)
+            if parsed.utcoffset() is None:
+                raise ValueError
+            due_at = parsed.astimezone(TZ).isoformat(timespec='minutes')
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError('A timezone-aware deadline is required.') from None
+        return {'title': title.strip(), 'course': course.strip(), 'due_at': due_at}
+
+    def create(self, title, course, due_at, *, source_name='Manual entry', evidence=''):
+        values = self.validated_edit(title, course, due_at)
+        with _inbox_lock(self.path):
+            current = self.load()
+            if any(row.get('title', '').casefold() == values['title'].casefold()
+                   and row.get('course', '').casefold() == values['course'].casefold()
+                   and row.get('due_at') == values['due_at'] for row in current):
+                raise ValueError('This deadline already exists.')
+            record = {**values, 'id': uuid.uuid4().hex, 'status': 'open',
+                      'source_name': _clean(source_name, 200), 'evidence': _clean(evidence, 6000),
+                      'confidence': 'confirmed', 'time_assumed': False,
+                      'created_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')}
+            self._write(current + [record])
+            return record
+
+    def create_observation_draft(self, observation):
+        """Record an observed date for review without adding it to the active plan."""
+        values = self.validated_edit(observation['title'], observation.get('course', ''),
+                                     observation['new_due_at'])
+        identity = observation['id']
+        with _inbox_lock(self.path):
+            current = self.load()
+            existing = next((row for row in current if row.get('observation_id') == identity), None)
+            if existing:
+                return dict(existing)
+            evidence = ' '.join(filter(None, (observation.get('evidence'), observation.get('new_raw_due_text'))))
+            record = {**values, 'id': uuid.uuid4().hex, 'status': 'draft',
+                      'observation_id': identity, 'source_name': 'Campus Radar',
+                      'source_url': observation.get('source_url') or '',
+                      'evidence': _clean(evidence, 6000),
+                      'confidence': 'observed', 'time_assumed': False,
+                      'created_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')}
+            self._write(current + [record])
+            return record
+
+    def confirm_draft(self, identity, *, title, course, due_at):
+        values = self.validated_edit(title, course, due_at)
+        with _inbox_lock(self.path):
+            current = self.load()
+            draft = next((row for row in current if row.get('id') == identity), None)
+            if not draft or draft.get('status') != 'draft':
+                raise ValueError('This deadline is no longer awaiting confirmation.')
+            if any(row.get('status', 'open') == 'open'
+                   and row.get('title', '').casefold() == values['title'].casefold()
+                   and row.get('course', '').casefold() == values['course'].casefold() for row in current):
+                raise ValueError('An active deadline with this title already exists for this course. Edit that deadline to change its date.')
+            draft.update(values, status='open', confidence='confirmed')
+            self._write(current)
+            return dict(draft)
+
+    def _edit_local(self, identity, *, values=None, status=None):
+        with _inbox_lock(self.path):
+            current = self.load()
+            record = next((item for item in current if item.get('id') == identity), None)
+            if record is None:
+                raise ValueError('This deadline no longer exists.')
+            if status == 'open' and record.get('confidence') == 'observed':
+                raise ValueError('Review and confirm this observed date before opening it.')
+            if values and record.get('origin_assignment_id'):
+                raise ValueError('Edit this assignment through its confirmed revision history.')
+            updates = values or {'status': status}
+            if any(record.get(key) != value for key, value in updates.items()):
+                snapshot = {key: record.get(key) for key in ('title', 'course', 'due_at', 'status')}
+                snapshot['changed_at'] = dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')
+                record.setdefault('edit_history', []).append(snapshot)
+                record.update(updates)
+                if values:
+                    record['time_assumed'] = False
+                self._write(current)
+            return dict(record)
+
+    def update(self, identity, *, title, course, due_at):
+        return self._edit_local(identity, values=self.validated_edit(title, course, due_at))
+
+    def set_status(self, identity, status):
+        if status not in ('open', 'done', 'archived', 'draft'):
+            raise ValueError('Choose a valid deadline status.')
+        return self._edit_local(identity, status=status)
 
     def upsert_origin(self, origin_assignment_id, *, revision, course, title,
                       due_at, evidence='', source_name='Lecture review'):
@@ -213,7 +312,8 @@ class DeadlineStore:
                 if not isinstance(history, list):
                     raise ValueError('The Inbox assignment history is unreadable.')
                 history.append({'revision': old_revision, 'title': existing.get('title'),
-                                'due_at': existing.get('due_at')})
+                                'course': existing.get('course'), 'due_at': existing.get('due_at'),
+                                'evidence': existing.get('evidence'), 'source_name': existing.get('source_name')})
             else:
                 existing = {'id': uuid.uuid4().hex, 'status': 'open',
                             'created_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
@@ -223,6 +323,5 @@ class DeadlineStore:
                              'origin_revision': revision, 'evidence': _clean(evidence, 6000),
                              'source_name': _clean(source_name, 200), 'confidence': 'confirmed',
                              'time_assumed': False})
-            atomic_write(self.path, json.dumps({'version': 1, 'deadlines': current},
-                                               ensure_ascii=False, indent=2).encode('utf-8'))
+            self._write(current)
             return dict(existing)

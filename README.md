@@ -2,9 +2,37 @@
 
 Local-first desktop workspace for turning lectures into an organized study system.
 
+[Download the Windows x64 release and the optional Chrome adapter](https://github.com/narbotonur/LectureStudio/releases/tag/v0.9.2).
+
+## Local lecture library and speaker analysis
+
+Open **Lecture → Library** (or **More → Lecture library**) to search archived transcripts, notes and
+cards. Lecture details, edits and audio links are saved per lecture. In **Transcript**, double-click a
+passage to play its recording from that time. Right-click a passage to edit its text or change its
+speaker. **More → Restore lecture revision** opens the local edit history.
+
+Use **Test audio** beside the recording controls to record and play a five-second sample from the
+selected source. The **Local models** tab can prepare the configured Whisper model and install the
+optional speaker models. Studio also accepts an existing local model folder.
+
+In **Transcript**, choose a speaker to see their passages, play a short voice sample, rename a group
+or merge duplicate groups. Use **Unassigned** and **Overlapping speech** to review passages that
+need attention. Select one or more passages and click **Assign** to correct their label. See the
+[speaker model setup](packaging/DIARIZATION.md) for supported runtimes and manual installation.
+
+Press **Ctrl+F** in **Transcript** to find phrases in the visible passages. **F3** moves to the
+next match and **Shift+F3** moves back. The player marks the current passage and offers speeds
+from **0.5× to 2×**. Use **Bookmarks** to name the current audio position or a selected passage.
+Bookmarks are saved with the lecture. Jumping from a bookmark preserves the playback state.
+
+Back up the whole per-user profile folder while Studio is closed before upgrading. Version 1
+transcripts reopen in Studio 0.9 and are saved in version 2 on editing. If an old transcript has no
+audio link, choose **Link audio** and select the original file. Restore the profile backup to use
+the older app with the previous data format.
+
 ## Hackathon development branch
 
-**Release:** [v0.8.0 — Windows app and Chrome adapter](https://github.com/narbotonur/LectureStudio/releases/tag/v0.8.0).
+**Hackathon release** [v0.8.0 for Windows and Chrome](https://github.com/narbotonur/LectureStudio/releases/tag/v0.8.0).
 For the new-work disclosure, reproducible demo and submission copy, start with the
 [hackathon reviewer guide](docs/HACKATHON_SUBMISSION.md). Use source tag `v0.8.0`
 to reproduce this release; `main` can still point to the pre-hackathon baseline.

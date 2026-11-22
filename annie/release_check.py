@@ -15,6 +15,7 @@ def run(check_secrets=True):
     from annie import config as cfg
     from annie.secure_storage import read_secret, write_secret, delete_secret
     from annie.calendar_service import is_connected
+    from fsrs import Card, Rating, Scheduler
     import faster_whisper
     import ctranslate2
     import av
@@ -80,13 +81,26 @@ def run(check_secrets=True):
           'Executable lecture graph engine failed')
     window._switch_tab(11)
     check(not window.study_page.store.history(), 'Fresh profile contains study history')
+    old_archive = Path(cfg.DATA_DIR) / 'previous-lecture.json'
+    old_archive.write_text(json.dumps({'version': 1, 'source_name': 'Archive fixture',
+        'segments': [{'start': 1, 'end': 2, 'text': 'Saved test segment'}],
+        'complete': True, 'course': 'Fixture course'}), encoding='utf-8')
+    check(window._open_lecture_path(old_archive), 'Could not open the old transcript format')
+    window.notes_area.setPlainText('Edited fixture notes')
+    check(window._save_active_lecture(), 'Could not save the migrated lecture')
+    from annie.lecture_archive import archive_path, load_transcript
+    reloaded = load_transcript(archive_path(cfg.DATA_DIR, window._lecture['id']))
+    check(reloaded['notes'] == 'Edited fixture notes' and reloaded['segments'][0]['text'] == 'Saved test segment',
+          'Saved lecture did not survive a profile migration')
+    _, review = Scheduler().review_card(Card(), Rating.Good)
+    check(review.rating == Rating.Good, 'Flashcard scheduler failed')
     window.close()
     dock = StudioDock()
     check((Path(__file__).parent / 'gui/assets/portals/moodle-symbol.svg').is_file(), 'Dock asset missing')
     dock.hide_immediately()
     app.processEvents()
     print(json.dumps({'status': 'ok', 'checks': ['fresh-profile', 'calendar-discovery',
-          'Whisper-backend-imports', 'Meta-adapter-imports', 'setup-window', 'thirteen-Studio-workspaces', 'executable-graph-engine', 'dock-assets'] + native_checks +
+          'Whisper-backend-imports', 'Meta-adapter-imports', 'setup-window', 'thirteen-Studio-workspaces', 'executable-graph-engine', 'dock-assets', 'lecture-archive-v1-to-v2', 'offline-flashcards'] + native_checks +
           (['native-secret-storage'] if check_secrets else []),
           'skipped': [] if check_secrets else ['native-secret-storage (noninteractive build check)']}))
     return 0

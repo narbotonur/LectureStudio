@@ -92,6 +92,31 @@ class HabitTests(unittest.TestCase):
         reopened = HabitStore(self.store.path)
         self.assertEqual(reopened.progress(habit['id'], day, day + dt.timedelta(days=1))[day], 1)
 
+    def test_effective_schedule_pause_and_resume_preserve_history(self):
+        from annie.habits import TZ, schedule_for
+        monday = dt.date(2026, 9, 14)
+        created = dt.datetime.combine(monday, dt.time(), TZ).timestamp()
+        habit = self.store.add('Read', 'count', 10, 'pages', 127, '17:30', now=created)
+        self.store.set_progress(habit['id'], monday, 8)
+        self.store.set_progress(habit['id'], monday, 10)
+        wednesday = monday + dt.timedelta(days=2)
+        self.store.update(habit['id'], 'Read', 'count', 10, 'pages', 31, '18:30',
+                          schedule_effective_day=wednesday)
+        friday = monday + dt.timedelta(days=4)
+        self.store.pause(habit['id'], wednesday, friday)
+        stored = HabitStore(self.store.path).habits()[0]
+        self.assertEqual(schedule_for(stored, monday), (127, '17:30'))
+        self.assertEqual(schedule_for(stored, wednesday), (31, '18:30'))
+        self.assertTrue(scheduled(stored, monday))
+        self.assertFalse(scheduled(stored, friday))
+        self.store.resume(habit['id'], friday)
+        stored = self.store.habits()[0]
+        self.assertFalse(scheduled(stored, wednesday))
+        self.assertTrue(scheduled(stored, friday))
+        self.assertEqual(self.store.progress(habit['id'], monday, friday)[monday], 10)
+        with self.assertRaisesRegex(ValueError, 'logged progress'):
+            self.store.update(habit['id'], 'Read', 'count', 10, 'chapters', 31, '18:30')
+
 
 if __name__ == '__main__':
     unittest.main()

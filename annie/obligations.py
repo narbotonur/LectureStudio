@@ -212,7 +212,7 @@ class ObligationStore:
         with self.connection() as db:
             rows = db.execute('SELECT * FROM proposals' + (' WHERE status=?' if status else '')
                               + ' ORDER BY created DESC,id', (status,) if status else ())
-            return [self._proposal(row, db) for row in rows]
+            return [item for row in rows if not (item := self._proposal(row, db)).get('manual_edit')]
 
     def get_proposal(self, identity):
         with self.connection() as db:
@@ -221,7 +221,7 @@ class ObligationStore:
                 raise ValueError('This proposal was not found.')
             return self._proposal(row, db)
 
-    def approve(self, identity, *, due_at=None, expected_fingerprint=None):
+    def approve(self, identity, *, due_at=None, expected_fingerprint=None, title=None, course=None):
         stale = False
         stale_message = 'This assignment changed. Review a new proposal before replacing its deadline.'
         with self.connection() as db:
@@ -245,10 +245,10 @@ class ObligationStore:
                 assignment_id = payload['assignment_id']
                 current = (db.execute('SELECT * FROM assignments WHERE assignment_id=?',
                                       (assignment_id,)).fetchone() if assignment_id else None)
-                collision = (not assignment_id and any(
-                    candidate['course'].casefold() == payload['course'].casefold()
-                    and _assignment_name(candidate['title']) == _assignment_name(payload['title'])
-                    for candidate in db.execute('SELECT course,title FROM assignments')))
+                values = DeadlineStore.validated_edit(
+                    payload['title'] if title is None else title,
+                    payload['course'] if course is None else course, confirmed)
+                collision = self._name_conflict(db, values, assignment_id)
                 legacy_collision = False
                 if not assignment_id and not collision:
                     for legacy in DeadlineStore(self.root).load():
@@ -257,8 +257,8 @@ class ObligationStore:
                         legacy_course, legacy_title = legacy.get('course', ''), legacy.get('title', '')
                         if not isinstance(legacy_course, str) or not isinstance(legacy_title, str):
                             raise ValueError('The legacy Inbox has unreadable assignment fields. Review it before approving.')
-                        if (legacy_course.casefold() == payload['course'].casefold()
-                                and _assignment_name(legacy_title) == _assignment_name(payload['title'])):
+                        if (legacy_course.casefold() == values['course'].casefold()
+                                and _assignment_name(legacy_title) == _assignment_name(values['title'])):
                             legacy_collision = True
                             break
                 if collision:
@@ -281,7 +281,7 @@ class ObligationStore:
                     stale = True
                 else:
                     now = time.time()
-                    if current and current['due_at'] == confirmed:
+                    if current and all(current[key] == value for key, value in values.items()):
                         # Already current: approval is recorded but not a new
                         # historical change, even if a model called it correction.
                         db.execute("UPDATE proposals SET status='approved',approved_at=?,"
@@ -290,19 +290,7 @@ class ObligationStore:
                     else:
                         assignment_id = assignment_id or uuid.uuid4().hex
                         revision = current['revision'] + 1 if current else 1
-                        db.execute('INSERT INTO assignments(assignment_id,course,title,due_at,revision) '
-                                   'VALUES(?,?,?,?,?) ON CONFLICT(assignment_id) DO UPDATE SET '
-                                   'title=excluded.title,due_at=excluded.due_at,revision=excluded.revision',
-                                   (assignment_id, payload['course'], payload['title'], confirmed, revision))
-                        db.execute('INSERT INTO obligation_versions VALUES(?,?,?,?,?,?,?,?)',
-                                   (assignment_id, revision, payload['course'], payload['title'], confirmed,
-                                    identity, current['revision'] if current else None, now))
-                        event = {'origin_assignment_id': assignment_id, 'revision': revision,
-                                 'course': payload['course'], 'title': payload['title'], 'due_at': confirmed,
-                                 'evidence': '\n'.join(item['quote'] for item in payload['evidence']),
-                                 'source_name': payload['source_name']}
-                        db.execute('INSERT INTO obligation_outbox(operation_id,payload) VALUES(?,?)',
-                                   (identity, json.dumps(event, ensure_ascii=False)))
+                        self._write_version(db, assignment_id, revision, values, identity, payload, now)
                         db.execute("UPDATE proposals SET status='approved',approved_at=?,"
                                    'applied_assignment_id=?,applied_revision=?,confirmed_due_at=? WHERE id=?',
                                    (now, assignment_id, revision, confirmed, identity))
@@ -310,6 +298,55 @@ class ObligationStore:
             raise ValueError(stale_message)
         self.drain_outbox()
         return self.get_proposal(identity)
+
+    @staticmethod
+    def _name_conflict(db, values, assignment_id):
+        return any(candidate['assignment_id'] != assignment_id
+                   and candidate['course'].casefold() == values['course'].casefold()
+                   and _assignment_name(candidate['title']) == _assignment_name(values['title'])
+                   for candidate in db.execute('SELECT assignment_id,course,title FROM assignments'))
+
+    @staticmethod
+    def _write_version(db, assignment_id, revision, values, operation, payload, now):
+        course, title, due_at = (values[key] for key in ('course', 'title', 'due_at'))
+        db.execute('INSERT INTO assignments(assignment_id,course,title,due_at,revision) '
+                   'VALUES(?,?,?,?,?) ON CONFLICT(assignment_id) DO UPDATE SET '
+                   'course=excluded.course,title=excluded.title,due_at=excluded.due_at,revision=excluded.revision',
+                   (assignment_id, course, title, due_at, revision))
+        db.execute('INSERT INTO obligation_versions VALUES(?,?,?,?,?,?,?,?)',
+                   (assignment_id, revision, course, title, due_at,
+                    operation, revision - 1 if revision > 1 else None, now))
+        event = {'origin_assignment_id': assignment_id, 'revision': revision, **values,
+                 'evidence': '\n'.join(item['quote'] for item in payload['evidence']),
+                 'source_name': payload['source_name']}
+        db.execute('INSERT INTO obligation_outbox(operation_id,payload) VALUES(?,?)',
+                   (operation, json.dumps(event, ensure_ascii=False)))
+
+    def edit_assignment(self, assignment_id, expected_revision, *, title, course, due_at):
+        """Create a human edit against the version visible in Inbox."""
+        values = DeadlineStore.validated_edit(title, course, due_at)
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current = db.execute('SELECT * FROM assignments WHERE assignment_id=?',
+                                 (assignment_id,)).fetchone()
+            if current is None or current['revision'] != expected_revision:
+                raise ValueError('This assignment changed. Reload Inbox before editing.')
+            if all(current[key] == value for key, value in values.items()):
+                return expected_revision
+            if self._name_conflict(db, values, assignment_id):
+                raise ValueError('An assignment with this title already exists in this course.')
+            prior = db.execute('SELECT p.payload FROM obligation_versions v JOIN proposals p '
+                               'ON p.id=v.proposal_id WHERE v.assignment_id=? AND v.revision=?',
+                               (assignment_id, expected_revision)).fetchone()
+            payload = {**json.loads(prior['payload']), 'manual_edit': True}
+            now, revision, operation = time.time(), expected_revision + 1, uuid.uuid4().hex
+            db.execute('INSERT INTO proposals(id,payload,status,created,approved_at,applied_assignment_id,'
+                       'applied_revision,confirmed_due_at) VALUES(?,?,?,?,?,?,?,?)',
+                       (operation, json.dumps(payload, ensure_ascii=False), 'approved', now, now,
+                        assignment_id, revision, values['due_at']))
+            self._write_version(db, assignment_id, revision, values, operation, payload, now)
+        self.drain_outbox()
+        return revision
 
     def reject(self, identity):
         with self.connection() as db:

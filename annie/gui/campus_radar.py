@@ -53,6 +53,25 @@ def _when(value):
         return 'Unknown check time'
 
 
+def _freshness(value):
+    if not value:
+        return 'Never checked successfully'
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+        if parsed.utcoffset() is None:
+            return 'Unknown check age'
+        minutes = max(0, int((dt.datetime.now(dt.timezone.utc) - parsed).total_seconds() / 60))
+    except (ValueError, TypeError):
+        return 'Unknown check age'
+    if minutes < 1:
+        return 'Just now'
+    if minutes < 60:
+        return f'{minutes} min ago'
+    if minutes < 1440:
+        return f'{minutes // 60} h ago'
+    return f'{minutes // 1440} d ago'
+
+
 def _unique_object(pairs):
     result = {}
     for key, value in pairs:
@@ -140,6 +159,7 @@ class RadarPage(QWidget):
         self._sources, self._events = [], []
         self._selected = None
         self._selected_kind = None
+        self._muted = set()
         self.receiver = None
         self.tray = None
         self.capture_received.connect(self._received)
@@ -154,7 +174,7 @@ class RadarPage(QWidget):
         self.refresh_button.clicked.connect(self.reload)
         heading.addWidget(self.refresh_button)
         layout.addLayout(heading)
-        self.intro = label('Watch selected WebWork courses with the browser extension, or import a captured snapshot manually. Review exactly what changed and when the source was last checked.', 'muted')
+        self.intro = label('Watch, pause, or check each WeBWorK course in the browser extension. Review local changes and notification settings here.', 'muted')
         self.intro.setWordWrap(True)
         layout.addWidget(self.intro)
         connection = QHBoxLayout()
@@ -181,7 +201,7 @@ class RadarPage(QWidget):
         layout.addWidget(self.coverage_label)
         layout.addWidget(label('Source coverage and freshness', 'section'))
         self.sources_table = QTableWidget(0, 4)
-        self.sources_table.setHorizontalHeaderLabels(['Source', 'Scope', 'Last success', 'Current state'])
+        self.sources_table.setHorizontalHeaderLabels(['Source', 'Scope', 'Last success', 'Last check result'])
         self.sources_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.sources_table.setSelectionMode(QTableWidget.SingleSelection)
         self.sources_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -223,10 +243,23 @@ class RadarPage(QWidget):
         self.open_button.setEnabled(False)
         self.open_button.clicked.connect(self.open_source)
         actions.addWidget(self.open_button)
+        self.draft_button = QPushButton('Save deadline draft')
+        self.draft_button.clicked.connect(self.save_deadline_draft)
+        self.draft_button.setEnabled(False)
+        actions.addWidget(self.draft_button)
         self.import_button = QPushButton('Import manually captured snapshot…')
         self.import_button.clicked.connect(self.choose_snapshot)
-        actions.addWidget(self.import_button)
         layout.addLayout(actions)
+        tools = QHBoxLayout()
+        self.mute_button = QPushButton('Mute source alerts')
+        self.mute_button.clicked.connect(self.toggle_source_mute)
+        self.mute_button.setEnabled(False)
+        tools.addWidget(self.mute_button)
+        drafts = QPushButton('Open deadline drafts')
+        drafts.clicked.connect(self._open_drafts)
+        tools.addWidget(drafts)
+        tools.addWidget(self.import_button)
+        layout.addLayout(tools)
         self.status = label('', 'muted')
         self.status.setWordWrap(True)
         for widget in (self.intro, self.coverage_label, self.status):
@@ -307,6 +340,8 @@ class RadarPage(QWidget):
         self._selected = None
         self.mark_button.setEnabled(False)
         self.open_button.setEnabled(False)
+        self.mute_button.setEnabled(False)
+        self.draft_button.setEnabled(False)
         self.sources_table.setRowCount(0)
         self.events_list.clear()
         self.details.clear()
@@ -314,6 +349,7 @@ class RadarPage(QWidget):
             if self.store is None:
                 raise ValueError('Radar storage is unavailable.')
             self._sources = self.store.sources()
+            self._muted = self.store.muted_sources()
             self._events = self.store.events(unread_only=self.unread_only.isChecked())
             # Baseline history should not bury the currently open assignment.
             self._events.sort(key=lambda e: (0 if e['type'] != 'first_seen' else
@@ -330,7 +366,7 @@ class RadarPage(QWidget):
         for row, source in enumerate(self._sources):
             cells = [f"{source['name']} · {_KINDS.get(source['kind'], source['kind'])}",
                 'Assignment only' if source['scope'] == 'assignment' else 'Course source',
-                _when(source.get('last_success_at')), _STATES.get(source['state'], source['state'])]
+                _freshness(source.get('last_success_at')), _STATES.get(source['state'], source['state'])]
             for column, text in enumerate(cells):
                 cell = QTableWidgetItem(text)
                 cell.setData(Qt.UserRole, source)
@@ -367,12 +403,17 @@ class RadarPage(QWidget):
         self._selected, self._selected_kind = source, 'source'
         self.mark_button.setEnabled(False)
         self.open_button.setEnabled(bool(source.get('url')))
+        self.draft_button.setEnabled(False)
+        muted = source['source_id'] in self._muted
+        self.mute_button.setText('Unmute source alerts' if muted else 'Mute source alerts')
+        self.mute_button.setEnabled(True)
         lines = [source['name'], f"Platform: {_KINDS.get(source['kind'], source['kind'])}",
             'Scope: assignment only — this does not cover the whole course.' if source['scope'] == 'assignment'
             else 'Scope: course source — coverage still depends on a complete, successful capture.',
             '', 'Current state: ' + _STATES.get(source['state'], source['state']),
             'Last successful capture: ' + _when(source.get('last_success_at')),
             'Last attempted capture: ' + _when(source.get('last_attempt_at'))]
+        lines += ['Desktop alerts: ' + ('Muted' if muted else 'Enabled')]
         if source.get('last_error'):
             lines += ['', 'Check error:', source['last_error']]
         if source['state'] in ('error', 'partial', 'unverified'):
@@ -388,6 +429,8 @@ class RadarPage(QWidget):
         self._selected, self._selected_kind = event, 'event'
         self.mark_button.setEnabled(bool(event.get('unread')))
         self.open_button.setEnabled(bool(event.get('source_url')))
+        self.draft_button.setEnabled(bool(event.get('new_due_at') and event.get('new_status') != 'closed'))
+        self.mute_button.setEnabled(False)
         lines = [event['title'], f"Course: {event.get('course') or 'Unspecified'}",
             'Change: ' + _EVENTS.get(event['type'], event['type']),
             'Observed here: ' + _when(event.get('observed_at')), '']
@@ -410,6 +453,40 @@ class RadarPage(QWidget):
         lines += ['', 'Marking reviewed does not complete the assignment or change its due or closing time.',
                   '', 'Source link:', event.get('source_url') or 'No source link recorded.']
         self.details.setPlainText('\n'.join(lines))
+
+    def toggle_source_mute(self):
+        if self._selected_kind != 'source' or not self._selected or self.store is None:
+            return
+        source_id = self._selected['source_id']
+        muted = source_id not in self._muted
+        try:
+            self.store.set_muted(source_id, muted)
+            self._muted = self.store.muted_sources()
+            self._source_selected()
+            self.status.setText('Alerts muted for this source.' if muted else 'Alerts restored for this source.')
+        except (OSError, sqlite3.Error, ValueError):
+            self.status.setText('Could not update this source’s notification setting.')
+
+    def save_deadline_draft(self):
+        if not self.draft_button.isEnabled() or self._selected_kind != 'event' or self.store is None:
+            return None
+        from annie.deadlines import DeadlineStore
+        try:
+            draft = DeadlineStore(self.store.root).create_observation_draft(self._selected)
+            self.status.setText('Saved to Deadline Inbox → Drafts. Review and confirm the date before planning.'
+                                if draft['status'] == 'draft' else 'This observation is already in Deadline Inbox.')
+            return draft
+        except (OSError, ValueError, KeyError):
+            self.status.setText('Could not save a deadline draft from this observation.')
+            return None
+
+    def _open_drafts(self):
+        from annie.deadlines import DeadlineStore
+        from annie.gui.deadline_inbox import DeadlineInbox
+        if self.store is not None:
+            dialog = DeadlineInbox(self, DeadlineStore(self.store.root), open_drafts=True)
+            dialog.saved_changed.connect(self.changes_updated.emit)
+            dialog.exec_()
 
     def mark_reviewed(self):
         if self._selected_kind != 'event' or not self._selected or self.store is None:

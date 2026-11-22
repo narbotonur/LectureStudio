@@ -1,5 +1,6 @@
 """Reviewable local weekly plan built around calendar and prayer constraints."""
 import datetime as dt
+import sqlite3
 
 from PyQt5.QtCore import QThread, QTime, pyqtSignal
 from PyQt5.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
@@ -20,6 +21,16 @@ def _metric(title):
     value = label('—', 'section')
     box.addWidget(value)
     return card, value
+
+
+def _manual_blocks(root, monday):
+    from annie.daily_plan import DailyPlanStore
+    end = monday + dt.timedelta(days=6)
+    return [{**item, 'kind': 'study', 'detail': 'Saved in Today'}
+            for item in DailyPlanStore(root).decisions().values()
+            if item.get('status') == 'accepted' and item.get('start')
+            and (item.get('pinned') or item['key'].startswith('manual:'))
+            and monday.isoformat() <= item['day'] <= end.isoformat()]
 
 
 class PlannerSettingsDialog(QDialog):
@@ -112,28 +123,35 @@ class PlannerSettingsDialog(QDialog):
 class PlannerWorker(QThread):
     loaded = pyqtSignal(object)
 
-    def __init__(self, monday, settings, parent=None):
+    def __init__(self, monday, settings, parent=None, *, root=None):
         super().__init__(parent)
         self.monday, self.settings = monday, settings
+        self.root = root
 
     def run(self):
+        from annie.planner import LocalCalendarStore
         notes, events, prayers = [], [], {}
+        try:
+            events.extend(LocalCalendarStore(self.root).events(self.monday))
+        except (OSError, sqlite3.Error):
+            self.loaded.emit({'error': 'Could not read local classes. Refresh Schedule before building the week.'})
+            return
         end = self.monday + dt.timedelta(days=6)
         try:
             from annie.calendar_service import is_connected, list_events
             if is_connected():
                 start_dt = dt.datetime.combine(self.monday, dt.time(), TZ)
-                events = list_events(start_dt, start_dt + dt.timedelta(days=7),
-                                     interactive=False, raise_errors=True, paginate=True)
+                events.extend(list_events(start_dt, start_dt + dt.timedelta(days=7),
+                                          interactive=False, raise_errors=True, paginate=True))
             else:
-                notes.append('Google Calendar is not connected; classes were not blocked.')
+                notes.append('Google Calendar is disconnected. Local classes remain blocked.')
         except Exception:
-            notes.append('Calendar could not refresh; the plan was built without its events.')
+            notes.append('Google Calendar could not refresh. Local classes remain blocked.')
         if self.isInterruptionRequested():
             return
         try:
             from annie.prayer_times import PrayerStore, fetch_date_range
-            prayer_store = PrayerStore()
+            prayer_store = PrayerStore(self.root)
             prayer_settings = prayer_store.settings()
             if prayer_settings.city and prayer_settings.country:
                 cached = prayer_store.cache(prayer_settings)
@@ -142,6 +160,7 @@ class PlannerWorker(QThread):
                         prayer_settings, self.monday, end,
                         cancelled=self.isInterruptionRequested)
                     prayers = result['days']
+                    notes.append(f'Prayer times: AlAdhan · {self.monday:%d %b}–{end:%d %b}.')
                 except InterruptedError:
                     raise
                 except Exception:
@@ -150,7 +169,9 @@ class PlannerWorker(QThread):
                         if self.monday <= parsed <= end:
                             prayers[parsed] = day['times']
                     if prayers:
-                        notes.append('Prayer API was unavailable; cached prayer times protect only the available days.')
+                        fetched = (cached.get('fetched_at') or '')[:10]
+                        notes.append(f"Prayer times: cached {cached.get('source', 'prayer calendar')} "
+                                     f"({fetched or 'date unknown'}) · {len(prayers)} days covered.")
                     else:
                         notes.append('Prayer times could not refresh; only the Jumuah window was protected.')
             else:
@@ -163,26 +184,27 @@ class PlannerWorker(QThread):
             return
         try:
             from annie.habits import HabitStore
-            habits = HabitStore().habits()
+            habits = HabitStore().habits() if self.root is None else HabitStore(self.root / 'habits.sqlite3').habits()
         except Exception:
             habits = []
             notes.append('Habits could not be loaded.')
         try:
             from annie.gpa_tracker import GpaStore
-            gpa = GpaStore()
+            gpa = GpaStore() if self.root is None else GpaStore(self.root / 'gpa_tracker.sqlite3')
             courses = [gpa.summary(course['id']) for course in gpa.courses()]
         except Exception:
             courses = []
             notes.append('Courses could not be loaded.')
         try:
             from annie.deadlines import DeadlineStore
-            deadlines = DeadlineStore().load()
+            deadlines = DeadlineStore(self.root).load()
         except Exception:
             deadlines = []
             notes.append('Deadline Inbox could not be loaded.')
         try:
+            pinned = _manual_blocks(self.root, self.monday)
             result = generate_week(self.monday, self.settings, events, prayers,
-                                   habits, courses, deadlines)
+                                   habits, courses, deadlines, pinned=pinned)
         except Exception:
             self.loaded.emit({'error': 'Could not build this week. Check the planner settings and try again.'})
             return
@@ -246,10 +268,18 @@ class WeeklyPlannerPage(QWidget):
     def reload(self):
         self._update_range()
         try:
-            blocks = self.store.week(self.monday)
-            self._display(blocks, [])
-            self.status.setText('Saved local plan.' if blocks else 'No plan saved for this week.')
-        except ValueError as exc:
+            from annie.planner import LocalCalendarStore
+            blocks = [block for block in self.store.week(self.monday) if not block.get('key')]
+            blocks.extend(_manual_blocks(self.store.path.parent, self.monday))
+            snapshot = [item for item in self.store.fixed_events(self.monday)
+                        if item.get('annie_source') != 'local']
+            self._display(blocks, snapshot + LocalCalendarStore(self.store.path.parent).events(self.monday))
+            if blocks:
+                status = 'Saved local plan. Build my week to refresh the Google calendar snapshot.' if snapshot else 'Saved local plan.'
+            else:
+                status = 'No plan saved for this week.'
+            self.status.setText(status)
+        except (ValueError, OSError, sqlite3.Error) as exc:
             self._display([], [])
             self.status.setText(str(exc))
 
@@ -315,7 +345,7 @@ class WeeklyPlannerPage(QWidget):
             return
         self.status.setText('Reading calendar, prayer settings, habits and course priorities…')
         self._busy(True)
-        self._worker = PlannerWorker(self.monday, settings, self)
+        self._worker = PlannerWorker(self.monday, settings, self, root=self.store.path.parent)
         self._worker.loaded.connect(self._loaded)
         self._worker.finished.connect(self._finished)
         self._worker.start()
@@ -325,8 +355,8 @@ class WeeklyPlannerPage(QWidget):
             self.status.setText(result['error'])
             return
         try:
-            self.store.save_week(self.monday, result['blocks'])
-        except ValueError as exc:
+            self.store.save_week(self.monday, result['blocks'], calendar_events=result['calendar_events'])
+        except (ValueError, OSError) as exc:
             self.status.setText(str(exc))
             return
         self._display(result['blocks'], result['calendar_events'])

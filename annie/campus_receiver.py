@@ -172,7 +172,8 @@ class NotificationLedger:
         groups = {}
         for event in events:
             groups.setdefault(event['source_id'], []).append(event)
-        for group in groups.values():
+        muted = self.store.muted_sources()
+        for source_id, group in groups.items():
             changes = [e for e in group if e['type'] != 'first_seen']
             if changes:
                 title = f'Campus Radar: {len(changes)} coursework change(s)'
@@ -182,6 +183,6 @@ class NotificationLedger:
             else:
                 title = 'Campus Radar: course baseline recorded'
                 body = f'{len(group)} assignment(s) first observed. Open Campus Radar to review dates.'
-            if send(title, body):
+            if source_id in muted or send(title, body):
                 with self.store.connection() as db:
                     db.executemany('INSERT OR IGNORE INTO radar_delivery VALUES (?)', [(e['id'],) for e in group])

@@ -299,7 +299,8 @@ class ActionStore:
                 args = (status,)
             return [self._item(row) for row in db.execute(query + ' ORDER BY created DESC,id', args)]
 
-    def approve(self, identity, *, expected_fingerprint=None, due_at=None):
+    def approve(self, identity, *, expected_fingerprint=None, due_at=None,
+                title=None, course=None, minutes=None):
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM lecture_actions WHERE id=?', (identity,)).fetchone()
@@ -316,6 +317,16 @@ class ActionStore:
                 raise ValueError('Saved transcript evidence changed. Analyze the lecture again.')
             lecture_date = dt.date.fromisoformat(row['lecture_date']) if row['lecture_date'] else None
             action = verify_action(original, json.loads(row['segments']), lecture_date=lecture_date)
+            if title is not None:
+                action['summary'] = _text(title, 160 if action['type'] == 'deadline' else 240)
+            if course is not None:
+                if not isinstance(course, str) or len(course.strip()) > 100:
+                    raise ValueError('Enter a course name up to 100 characters.')
+                action['course'] = course.strip()
+            if minutes is not None:
+                if type(minutes) is not int or not 5 <= minutes <= 180:
+                    raise ValueError('Study duration must be between five and 180 minutes.')
+                action['minutes'] = minutes
             if action['type'] == 'deadline':
                 if due_at is not None:
                     action['due_at'] = _due_value(due_at)
@@ -324,18 +335,12 @@ class ActionStore:
                     raise ValueError('This date is ambiguous. Enter and confirm the deadline date and time first.')
                 parsed = dt.datetime.fromisoformat(action['due_at'])
                 inbox = DeadlineStore(self.root)
-                title = action['summary']
-                if any(item.get('title', '').casefold() == title.casefold()
-                       and item.get('due_at') == action['due_at']
-                       and item.get('course', '').casefold() != row['course'].casefold()
-                       for item in inbox.load()):
-                    title = f'{row["course"]} · {title}'[:160]
-                candidate = DeadlineCandidate(title, action['due_at'],
+                candidate = DeadlineCandidate(action['summary'][:160], action['due_at'],
                                               action['quote'], 'inferred',
                                               parsed.hour == 23 and parsed.minute == 59)
                 # Existing inbox deduplication makes a retry safe after a crash
                 # between this file write and the SQLite status commit.
-                inbox.add(row['course'], row['source_name'], [candidate])
+                inbox.add(action.get('course', row['course']), row['source_name'], [candidate])
             db.execute('UPDATE lecture_actions SET payload=?,status=\'approved\',approved_at=? WHERE id=?',
                        (json.dumps(action, ensure_ascii=False), time.time(), identity))
             return self._item(db.execute('SELECT * FROM lecture_actions WHERE id=?', (identity,)).fetchone())

@@ -558,6 +558,7 @@ class WhisperMeetingWorker(QThread):
     status_changed = pyqtSignal(str)
     audio_level = pyqtSignal(float, bool)
     recording_saved = pyqtSignal(str)
+    capture_started = pyqtSignal()
     capture_finished = pyqtSignal()
     backlog_updated = pyqtSignal(float)
 

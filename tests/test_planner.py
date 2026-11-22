@@ -3,7 +3,7 @@ import tempfile
 import unittest
 
 from annie.planner import (DEFAULT_SETTINGS, PlannerStore, TZ, blocks_as_events,
-                           generate_week, validate_settings)
+                           LocalCalendarStore, generate_week, validate_settings)
 
 MONDAY = dt.date(2026, 9, 14)
 NOW = dt.datetime(2026, 9, 14, 8, 0, tzinfo=TZ)
@@ -19,6 +19,22 @@ def event(start, end, title='Class'):
 
 
 class PlannerTests(unittest.TestCase):
+    def test_fixed_snapshot_remains_after_reopening_and_pinned_blocks_survive(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = PlannerStore(root)
+            local = LocalCalendarStore(root)
+            local.save(title='Offline class', location='5E', start=NOW.replace(hour=13),
+                       end=NOW.replace(hour=14))
+            events = local.events(MONDAY)
+            pinned = {'id': 'a' * 24, 'kind': 'study', 'title': 'Keep this slot', 'pinned': True,
+                      'start': NOW.replace(hour=17).isoformat(), 'end': NOW.replace(hour=18).isoformat()}
+            result = generate_week(MONDAY, {'weekly_study_minutes': 80}, events,
+                                   courses=[course('CSCI', 5, 70)], now=NOW, pinned=[pinned])
+            store.save_week(MONDAY, result['blocks'], calendar_events=events)
+            reopened = PlannerStore(root)
+            self.assertIn(pinned, reopened.week(MONDAY))
+            self.assertEqual(reopened.fixed_events(MONDAY), events)
+
     def test_settings_validation(self):
         result = validate_settings({})
         self.assertEqual(result['block_minutes'], 50)

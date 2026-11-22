@@ -177,6 +177,8 @@ class RadarStore:
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
                     item_id TEXT NOT NULL REFERENCES radar_items(item_id), payload TEXT NOT NULL,
                     unread INTEGER NOT NULL DEFAULT 1);
+                CREATE TABLE IF NOT EXISTS radar_muted_sources (
+                    source_id TEXT PRIMARY KEY REFERENCES radar_sources(source_id));
             ''')
 
     @contextmanager
@@ -222,6 +224,18 @@ class RadarStore:
         with self.connection() as db:
             return [self._public_source(dict(row)) for row in db.execute(
                 'SELECT * FROM radar_sources ORDER BY source_id')]
+
+    def muted_sources(self):
+        with self.connection() as db:
+            return {row[0] for row in db.execute('SELECT source_id FROM radar_muted_sources')}
+
+    def set_muted(self, source_id, muted):
+        with self.connection() as db:
+            self._registered(db, source_id)
+            if muted:
+                db.execute('INSERT OR IGNORE INTO radar_muted_sources VALUES (?)', (source_id,))
+            else:
+                db.execute('DELETE FROM radar_muted_sources WHERE source_id=?', (source_id,))
 
     @staticmethod
     def _check_order(source, checked_at):

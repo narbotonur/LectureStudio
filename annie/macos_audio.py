@@ -195,7 +195,11 @@ class SystemAudioSource:
         finally:
             self.reader.join(timeout=2)
             self.proc.stdout.close()
-            self.proc.stdin.close()
+            try:
+                self.proc.stdin.close()
+            except OSError:
+                # Closing can flush a pending stop command after the helper exited.
+                pass
 
 
 def microphone_permission(stop):

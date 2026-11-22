@@ -38,7 +38,7 @@ class MoodleSetup(QDialog):
         self.setMinimumSize(450, 480)
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
-        layout.addWidget(label('Connect your Moodle calendar', 'title'))
+        layout.addWidget(label('Preview your Moodle calendar', 'title'))
         instructions = label(
             '1. Open Moodle and sign in as usual in your browser.\n'
             '2. Open Calendar → Export calendar.\n'
@@ -64,14 +64,14 @@ class MoodleSetup(QDialog):
         privacy.setWordWrap(True)
         layout.addWidget(privacy)
         actions = QHBoxLayout()
-        self.check_button = role(QPushButton('Check & connect'), 'primary')
+        self.check_button = role(QPushButton('Load preview'), 'primary')
         self.check_button.clicked.connect(self._check)
         actions.addWidget(self.check_button, 1)
-        self.disconnect_button = QPushButton('Disconnect')
+        self.disconnect_button = QPushButton('Forget saved link')
         self.disconnect_button.clicked.connect(self._disconnect)
         actions.addWidget(self.disconnect_button)
         layout.addLayout(actions)
-        self.status = label('Not connected yet.')
+        self.status = label('No Moodle preview loaded.')
         self.status.setTextFormat(Qt.PlainText)
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -79,7 +79,7 @@ class MoodleSetup(QDialog):
         self.preview = QListWidget()
         self.preview.setAccessibleName('Preview of up to 50 calendar event titles')
         layout.addWidget(self.preview, 1)
-        note = label('This first step checks access and previews event names. Events may include classes, opening dates and deadlines. Automatic syncing and reminders are not enabled yet.')
+        note = label('This preview shows event names. Moodle events stay separate from Schedule, Today, and reminders.')
         note.setWordWrap(True)
         layout.addWidget(note)
         self.close_button = QPushButton('Done')
@@ -99,13 +99,13 @@ class MoodleSetup(QDialog):
         self.preview.clear()
         self.preview.addItems(preview['titles'])
         checked = dt.datetime.fromisoformat(data['checked_at']).astimezone().strftime('%d %b, %H:%M')
-        text = f"{'Saved preview' if cached else 'Connected'} · {preview['count']} events · Checked {checked}."
+        text = f"{'Saved preview' if cached else 'Preview loaded'} · {preview['count']} events · Checked {checked}."
         if not preview['count']:
             text += ' The calendar is valid but empty. Check the export filters and date range in Moodle.'
         elif preview['count'] > 50:
             text += ' Showing the first 50 names in export order.'
         self.status.setText(text)
-        self.check_button.setText('Refresh / connect new URL')
+        self.check_button.setText('Refresh preview')
 
     def _check(self):
         if self._worker:
@@ -121,7 +121,7 @@ class MoodleSetup(QDialog):
 
     def _result(self, data, error):
         if error:
-            self.status.setText(error + (' Saved connection and preview were kept.' if self.connection.path.exists() else ''))
+            self.status.setText(error + (' Saved link and preview were kept.' if self.connection.path.exists() else ''))
         else:
             self.url.clear()
             self._display(data)
@@ -140,8 +140,8 @@ class MoodleSetup(QDialog):
             self.connection.disconnect()
             self.url.clear()
             self.preview.clear()
-            self.status.setText('Disconnected on this laptop. Moodle events were not changed.')
-            self.check_button.setText('Check & connect')
+            self.status.setText('The Moodle link and preview were removed from this laptop.')
+            self.check_button.setText('Load preview')
             self.disconnect_button.setEnabled(False)
         except MoodleError as exc:
             self.status.setText(str(exc))

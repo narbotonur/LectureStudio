@@ -11,6 +11,8 @@ from PyQt5.QtTest import QSignalSpy
 from PyQt5.QtWidgets import QApplication
 
 from annie.gui.campus_radar import RadarPage, read_captured_snapshot
+from annie.deadlines import DeadlineStore
+from annie.campus_receiver import NotificationLedger
 
 
 def snapshot():
@@ -29,6 +31,43 @@ def captured(root, data):
 
 
 class CampusRadarUiTests(unittest.TestCase):
+    def test_observed_deadline_is_draft_until_explicit_confirmation(self):
+        with tempfile.TemporaryDirectory() as root:
+            page = RadarPage(root=root)
+            page.import_snapshot(captured(root, snapshot()))
+            self.assertTrue(page.draft_button.isEnabled())
+            draft = page.save_deadline_draft()
+            self.assertEqual(page.save_deadline_draft()['id'], draft['id'])
+            store = DeadlineStore(root)
+            self.assertEqual(len(store.load()), 1)
+            self.assertEqual(store.load()[0]['status'], 'draft')
+            with self.assertRaisesRegex(ValueError, 'confirm'):
+                store.set_status(draft['id'], 'open')
+            confirmed = store.confirm_draft(draft['id'], title=draft['title'],
+                                            course=draft['course'], due_at=draft['due_at'])
+            self.assertEqual(confirmed['status'], 'open')
+            self.assertIn('November 3', confirmed['evidence'])
+            page.close()
+
+    def test_mute_skips_one_source_without_marking_it_reviewed(self):
+        with tempfile.TemporaryDirectory() as root:
+            page = RadarPage(root=root)
+            first = snapshot()
+            second = copy.deepcopy(first)
+            second['source']['source_id'] = 'other-course'
+            page.store.import_snapshot(first)
+            page.store.import_snapshot(second)
+            page.reload()
+            page.sources_table.selectRow(0)
+            page.toggle_source_mute()
+            deliveries = []
+            ledger = NotificationLedger(page.store)
+            ledger.deliver(lambda title, body: deliveries.append((title, body)) or True)
+            self.assertEqual(len(deliveries), 1)
+            self.assertEqual(len(page.store.events(unread_only=True)), 2)
+            self.assertIn('Muted', page.details.toPlainText())
+            page.close()
+
     def test_open_baseline_assignment_is_visible_before_closed_history(self):
         with tempfile.TemporaryDirectory() as root:
             page = RadarPage(root=root)

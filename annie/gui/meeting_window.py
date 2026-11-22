@@ -3,46 +3,51 @@ Elite Annie — Modern Academic Workspace
 Crafted with the clean, elegant design system of elitenuet.xyz (Tailwind & Shadcn aesthetic).
 Ultra-clean, distraction-free, spacious UI for university lectures and study.
 """
+from collections import Counter
+from copy import deepcopy
 import os
 import sys
 import webbrowser
 import datetime
+from html import escape
+from pathlib import Path
+import re
 import math
 import uuid
+from threading import Event
 from typing import Optional, List, Dict
 
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QCheckBox,
     QComboBox, QFrame, QWidget, QSizePolicy, QApplication, QLineEdit,
     QFileDialog, QMessageBox, QStackedWidget, QSplitter, QListWidget, QListWidgetItem,
     QTimeEdit, QDateEdit, QScrollArea, QMenu, QAction, QBoxLayout, QShortcut,
-    QInputDialog, QGraphicsOpacityEffect
+    QInputDialog
 )
-from annie.gui.design import apply_theme, role, label, STYLE, UI_FONT
+from annie.gui.design import (ACCENT as EMERALD, ACCENT_HOVER as EMERALD_HOVER, BACKGROUND as BG_APP,
+                              BORDER as BORDER_COLOR, MUTED as TEXT_SUB, SURFACE as BG_SURFACE,
+                              TEXT as TEXT_MAIN, apply_theme, role, label, UI_FONT)
+from annie.gui.lecture_library import (LectureDetails, LectureLibrary, SpeakerPanel, TranscriptBookmarks,
+                                       TranscriptNavigator, TranscriptTools, playback_time, timestamp)
+from annie.lecture_archive import library_entries, load_transcript, save_lecture
+from annie.paths import DATA_DIR
 
 from PyQt5.QtCore import (
     QAbstractAnimation, QEasingCurve, QPropertyAnimation, Qt, pyqtSignal,
-    QTimer, QRectF, QDate, QTime, QThread, QEvent,
+    QTimer, QRectF, QDate, QTime, QThread, QEvent, QSize,
 )
-from PyQt5.QtGui import QFont, QPainter, QColor, QLinearGradient, QBrush, QPen, QPainterPath
+from PyQt5.QtGui import (QTextCursor, QTextBlockFormat, QTextCharFormat, QFont, QPainter, QColor,
+                         QLinearGradient, QBrush, QPen, QPainterPath, QKeySequence)
 
 # ─────────────────────────────────────────────────────────────
 #  Elite NUET Design Tokens (Tailwind / Shadcn Modern Light-Dark)
 # ─────────────────────────────────────────────────────────────
-EMERALD = "#C5ED87"
-EMERALD_HOVER = "#D9FFA5"
 EMERALD_BG = "rgba(0, 196, 140, 0.08)"
 EMERALD_BORDER = "rgba(0, 196, 140, 0.25)"
+BORDER_HOVER = "#51626B"
+TEXT_DIM = "#95A9B2"
 
-# Modern Slate Theme (Inspired by elitenuet.xyz)
-BG_APP = "#111310"             # Crisp modern slate-50
-BG_SURFACE = "#1B1E19"         # Pure white card surface
-BORDER_COLOR = "#343B30"       # Slate-200 border
-BORDER_HOVER = "#47543D"       # Slate-300 border
-
-TEXT_MAIN = "#F1F3E9"          # Slate-900 high contrast
-TEXT_SUB = "#ADB6A4"           # Slate-600 readable body
-TEXT_DIM = "#929D88"           # Slate-400 subtle hint
+LECTURE_PAGES = (0, 1, 2)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -277,7 +282,9 @@ class EliteAddClassModal(QDialog):
         start_dt = datetime.datetime(qdate.year(), qdate.month(), qdate.day(), qstart.hour(), qstart.minute())
         end_dt = datetime.datetime(qdate.year(), qdate.month(), qdate.day(), qend.hour(), qend.minute())
         if end_dt <= start_dt:
-            end_dt = start_dt + datetime.timedelta(hours=1)
+            QMessageBox.warning(self, 'Invalid class time', 'End time must be later than start time.')
+            self.end_time.setFocus()
+            return
 
         loc = self.loc_edit.text().strip()
 
@@ -402,6 +409,9 @@ class StudyChatThread(QThread):
         try:
             from google import genai
             from annie.config import GEMINI_API_KEY, GEMINI_MODEL
+            if not GEMINI_API_KEY:
+                self.error.emit('Set up Gemini to send a question.')
+                return
             client = genai.Client(api_key=GEMINI_API_KEY)
             active_models = [
                 GEMINI_MODEL,
@@ -431,6 +441,25 @@ class StudyChatThread(QThread):
 # ─────────────────────────────────────────────────────────────
 #  Elite Main Workstation Window
 # ─────────────────────────────────────────────────────────────
+class SpeakerDetection(QThread):
+    result = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(self, audio, model, count, parent=None):
+        super().__init__(parent)
+        self.audio, self.model, self.count = audio, model, count
+        self.cancel_event = Event()
+
+    def run(self):
+        from annie.diarization import DiarizationError, diarize
+        try:
+            intervals = diarize(self.audio, model_path=self.model, speaker_count=self.count, stop=self.cancel_event)
+            if not self.cancel_event.is_set():
+                self.result.emit(intervals)
+        except (DiarizationError, OSError, ValueError) as exc:
+            self.error.emit(str(exc))
+
+
 class ResponsiveComboBox(QComboBox):
     """Combobox that allows compact layout shrinking without locking min width to longest text."""
     def minimumSizeHint(self):
@@ -439,70 +468,27 @@ class ResponsiveComboBox(QComboBox):
         return sz
 
 
-class SmoothStackedWidget(QStackedWidget):
-    """A restrained fade between workspace pages without moving the layout."""
+class StudioStack(QStackedWidget):
+    """Keeps page switching independent of the minimum size of hidden pages."""
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._fade_animation = None
+    def minimumSizeHint(self):
+        return QSize(0, 0)
 
-    def setCurrentIndexAnimated(self, index):
-        if index == self.currentIndex():
-            return
-        if self._fade_animation:
-            self._fade_animation.stop()
-        page = self.widget(index)
-        super().setCurrentIndex(index)
-        effect = QGraphicsOpacityEffect(page)
-        page.setGraphicsEffect(effect)
-        effect.setOpacity(0.28)
-        animation = QPropertyAnimation(effect, b'opacity', self)
-        animation.setDuration(180)
-        animation.setStartValue(0.28)
-        animation.setEndValue(1.0)
-        animation.setEasingCurve(QEasingCurve.OutCubic)
-
-        def finished():
-            if page.graphicsEffect() is effect:
-                page.setGraphicsEffect(None)
-            if self._fade_animation is animation:
-                self._fade_animation = None
-
-        animation.finished.connect(finished)
-        self._fade_animation = animation
-        animation.start(QAbstractAnimation.DeleteWhenStopped)
+    def addScrollableWidget(self, page):
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidgetResizable(True)
+        page.setObjectName('homeContent')
+        scroll.viewport().setObjectName('homeContent')
+        scroll.setWidget(page)
+        return self.addWidget(scroll)
 
 
-class AnimatedStatusLabel(QLabel):
-    """Keep frequent recording status updates readable instead of jumpy."""
-
-    def __init__(self, text='', parent=None):
-        super().__init__(text, parent)
-        self._status_effect = QGraphicsOpacityEffect(self)
-        self._status_effect.setOpacity(1.0)
-        self.setGraphicsEffect(self._status_effect)
-        self._status_animation = None
-
-    def setText(self, text):
-        if text == self.text():
-            return
-        super().setText(text)
-        if self._status_animation:
-            self._status_animation.stop()
-        self._status_effect.setOpacity(0.58)
-        animation = QPropertyAnimation(self._status_effect, b'opacity', self)
-        animation.setDuration(160)
-        animation.setStartValue(0.58)
-        animation.setEndValue(1.0)
-        animation.setEasingCurve(QEasingCurve.OutCubic)
-        self._status_animation = animation
-
-        def finished():
-            if self._status_animation is animation:
-                self._status_animation = None
-
-        animation.finished.connect(finished)
-        animation.start(QAbstractAnimation.DeleteWhenStopped)
+class StudioShellLayout(QVBoxLayout):
+    def hasHeightForWidth(self):
+        # Let the shell shrink to its minimum. Page content scrolls inside the
+        # stack, independently of the preferred heights of the other pages.
+        return False
 
 
 class MeetingWindow(QDialog):
@@ -521,8 +507,17 @@ class MeetingWindow(QDialog):
         self._transcript_segments = []
         self._lecture_source_name = 'Current lecture'
         self._lecture_date = None
-        self._archived_fingerprint = ''
+        self._lecture = self._new_lecture('Untitled lecture')
+        self._transcript_ranges = []
+        self._open_lectures = {}
+        self._speaker_job = None
+        self._diarization_model = self._load_speaker_model()
+        self._audio_setup = None
+        self._lecture_timer = QTimer(self, singleShot=True, interval=650)
+        self._lecture_timer.timeout.connect(self._save_active_lecture)
         self._recording = False
+        self._recording_session = False
+        self._last_lecture_page = 0
         self._jobs = set()
         self._mini_dock = None
         self._restore_maximized = False
@@ -594,7 +589,18 @@ class MeetingWindow(QDialog):
             }}
         """)
 
-        layout = QVBoxLayout(self)
+        # Keep page height-for-width measurements inside the scroll viewport.
+        # The native window can then retain its size when a page is switched.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        canvas = QScrollArea()
+        canvas.setFrameShape(QFrame.NoFrame)
+        canvas.setWidgetResizable(True)
+        canvas.viewport().setObjectName('homeContent')
+        shell = QWidget(objectName='homeContent')
+        canvas.setWidget(shell)
+        outer.addWidget(canvas)
+        self.studio_layout = layout = StudioShellLayout(shell)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(12)
 
@@ -602,23 +608,26 @@ class MeetingWindow(QDialog):
         # remain in the same place at every window size.
         self.header_panel = role(QFrame(), "studioHeader")
         header = QHBoxLayout(self.header_panel)
-        header.setContentsMargins(10, 4, 0, 4)
+        header.setContentsMargins(0, 4, 0, 4)
         header.setSpacing(12)
         brand_mark = role(QLabel("A"), "brandMark")
         brand_mark.setAlignment(Qt.AlignCenter)
-        brand_mark.setFixedSize(42, 42)
+        brand_mark.setFixedSize(38, 38)
         header.addWidget(brand_mark)
 
-        heading = role(QLabel("Lecture studio"), "studioTitle")
+        heading = role(QLabel("Lecture Studio"), "studioTitle")
         title_column = QVBoxLayout()
         title_column.setSpacing(1)
         title_column.addWidget(heading)
-        self.operation_status = AnimatedStatusLabel(
-            "Ready · Choose a source and start recording"
-        )
+        self.operation_status = QLabel()
         self.operation_status.setWordWrap(True)
+        self.operation_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         role(self.operation_status, "studioStatus")
         title_column.addWidget(self.operation_status)
+        self.capture_status = label('', 'studioStatus')
+        self.capture_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.capture_status.hide()
+        title_column.addWidget(self.capture_status)
         header.addLayout(title_column, 1)
         header.addStretch()
         self.study_status_btn = QPushButton()
@@ -627,6 +636,13 @@ class MeetingWindow(QDialog):
         self.study_status_btn.clicked.connect(lambda: self._switch_tab(5))
         self.study_status_btn.hide()
         header.addWidget(self.study_status_btn)
+        self.signal_widget = EliteAudioWaveform()
+        self.signal_widget.setFixedWidth(72)
+        header.addWidget(self.signal_widget)
+        self.stop_recording_btn = QPushButton('Stop recording')
+        self.stop_recording_btn.setObjectName('stopRecordingButton')
+        self.stop_recording_btn.clicked.connect(self._toggle_recording)
+        header.addWidget(self.stop_recording_btn)
         self.snap_btn = QPushButton("Split screen")
         self.snap_btn.setObjectName("studioUtilityButton")
         self.snap_btn.clicked.connect(self._snap_to_left)
@@ -647,18 +663,18 @@ class MeetingWindow(QDialog):
         self.recording_panel = role(QFrame(), "recordingBar")
         self.recording_panel.setMinimumHeight(76)
         recording_bar = QHBoxLayout(self.recording_panel)
-        recording_bar.setContentsMargins(16, 10, 12, 10)
+        recording_bar.setContentsMargins(16, 7, 12, 7)
         recording_bar.setSpacing(10)
 
         class_field = QWidget()
-        class_field.setMinimumWidth(170)
+        class_field.setMinimumWidth(145)
         class_field.setMaximumWidth(520)
         class_column = QVBoxLayout(class_field)
         class_column.setContentsMargins(0, 0, 0, 0)
         class_column.setSpacing(4)
-        class_column.addWidget(label("CLASS", "fieldLabel"))
+        class_column.addWidget(label("Class", "fieldLabel"))
         self.class_picker = ResponsiveComboBox()
-        self.class_picker.setMinimumWidth(150)
+        self.class_picker.setMinimumWidth(135)
         self.class_picker.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.class_picker.addItem("Select a class", "")
         self.class_picker.setAccessibleName("Class")
@@ -672,10 +688,11 @@ class MeetingWindow(QDialog):
         source_column = QVBoxLayout(source_field)
         source_column.setContentsMargins(0, 0, 0, 0)
         source_column.setSpacing(4)
-        source_column.addWidget(label("AUDIO SOURCE", "fieldLabel"))
+        source_column.addWidget(label("Audio source", "fieldLabel"))
         self.audio_source_picker = ResponsiveComboBox()
         self.audio_source_picker.setMinimumWidth(120)
         self.audio_source_picker.setAccessibleName("Audio source")
+        self.audio_source_picker.currentTextChanged.connect(self.audio_source_picker.setToolTip)
         from annie.platform_support import audio_sources
         for title, value in audio_sources():
             self.audio_source_picker.addItem(title, value)
@@ -683,14 +700,15 @@ class MeetingWindow(QDialog):
         recording_bar.addWidget(source_field, 3)
         recording_bar.addStretch(1)
 
-        self.signal_widget = EliteAudioWaveform()
-        self.signal_widget.setFixedWidth(72)
-        recording_bar.addWidget(self.signal_widget)
+        self.audio_check = role(QPushButton('Test audio…'), 'quiet')
+        self.audio_check.setToolTip('Check input and set up local models')
+        self.audio_check.clicked.connect(self._open_audio_setup)
+        recording_bar.addWidget(self.audio_check)
         self.record_btn = QPushButton("Start recording")
         self.record_btn.setObjectName("recordButton")
         self.record_btn.setProperty("state", "idle")
         self.record_btn.setFixedHeight(42)
-        self.record_btn.setMinimumWidth(142)
+        self.record_btn.setMinimumWidth(125)
         self.record_btn.clicked.connect(self._toggle_recording)
         recording_bar.addWidget(self.record_btn)
         layout.addWidget(self.recording_panel)
@@ -700,33 +718,18 @@ class MeetingWindow(QDialog):
         nav_bar.setContentsMargins(8, 10, 8, 8)
         self.nav_layout = nav_bar
         nav_bar.setSpacing(5)
-        self.nav_caption = label("WORKSPACE", "navCaption")
-        nav_bar.addWidget(self.nav_caption)
-        self.tab_today_btn = self._create_tab_btn('Today')
-        self.tab_today_btn.clicked.connect(lambda: self._switch_tab(9))
-        nav_bar.addWidget(self.tab_today_btn)
-        for index, (attr, title) in enumerate((("tab_notes_btn", "Notes"),
-                ("tab_transcript_btn", "Transcript"), ("tab_flashcards_btn", "Flashcards"),
-                ("tab_chat_btn", "Assistant"), ("tab_schedule_btn", "Schedule"),
-                ("tab_study_btn", "Study"), ("tab_gpa_btn", "GPA"),
-                ("tab_habits_btn", "Habits"), ("tab_plan_btn", "Plan"))):
-            button = self._create_tab_btn(title, index == 0)
-            button.clicked.connect(lambda checked=False, i=index: self._switch_tab(i))
-            setattr(self, attr, button)
-            if index in (0, 4, 6):
-                button.setText({0: 'Lecture', 4: 'Schedule', 6: 'Academics'}[index])
-                nav_bar.addWidget(button)
-            else:
-                button.hide()
-        self.tab_review_btn = self._create_tab_btn('Review')
-        self.tab_review_btn.clicked.connect(lambda: self._switch_tab(10))
-        nav_bar.insertWidget(3, self.tab_review_btn)
+        self.workspace_buttons = {}
+        for index, title in ((9, 'Today'), (0, 'Lecture'), (10, 'Review'), (4, 'Schedule'), (6, 'Academics')):
+            button = self._create_tab_btn(title)
+            button.clicked.connect(lambda checked=False, i=index: self._switch_tab(self._last_lecture_page if i == 0 else i))
+            self.workspace_buttons[index] = button
+            nav_bar.addWidget(button)
         nav_bar.addStretch()
         nav_bar.addWidget(self.updates_panel.check_button)
-        self.tools_btn = QPushButton("More")
+        self.tools_btn = role(QPushButton("More"), 'quiet')
         menu = QMenu(self.tools_btn)
-        for title, index in [('Transcript', 1), ('Flashcards', 2), ('Study timer', 5),
-                             ('Campus Radar', 12), ('Executable lecture lab', 11), ('Daily routines', 7),
+        for title, index in [('Study timer', 5), ('Campus Radar', 12),
+                             ('Executable lecture lab', 11), ('Daily routines', 7),
                              ('Weekly plan · advanced', 8), ('Legacy assistant', 3)]:
             menu.addAction(title, lambda checked=False, i=index: self._switch_tab(i))
         menu.addSeparator()
@@ -735,10 +738,17 @@ class MeetingWindow(QDialog):
         menu.addSeparator()
         menu.addAction("Open saved recordings", lambda: self._open_profile_folder('recordings'))
         menu.addAction("Open study materials", lambda: self._open_profile_folder('library'))
+        library_action = menu.addAction('Lecture library…', self._open_library, QKeySequence(QKeySequence.Open))
+        self.addAction(library_action)
+        menu.addAction('Review flashcards…', self._review_flashcards)
         menu.addAction('Open saved transcript…', self._open_saved_transcript)
+        menu.addAction('Edit lecture details…', self._edit_lecture_details)
+        menu.addAction('Restore lecture revision…', self._restore_lecture_revision)
+        menu.addAction('Audio & local models…', self._open_audio_setup)
         menu.addAction("Accounts & Setup…", self._open_studio_setup)
         menu.addAction("Moodle calendar…", self._open_moodle_setup)
         menu.addAction("Deadline Inbox…", self._open_deadline_inbox)
+        menu.addAction('Check for updates…', self.updates_panel.check_manually)
         menu.addSeparator()
         menu.addAction("Import audio…", self._import_audio)
         menu.addAction("Import slide…", self._import_slide)
@@ -753,22 +763,69 @@ class MeetingWindow(QDialog):
 
 
         # ── 3. Main Workspace Stack ──────────────────────────
-        self.stack = SmoothStackedWidget()
+        self.stack = StudioStack()
 
         # Tab 0: Note Fusion Workspace (Granola / Humla Style)
         self.stack.addWidget(self._build_notes_fusion_tab())
 
         # Tab 1: Live Speech Transcript
         self.transcript_area = QTextEdit()
+        self.transcript_area.setObjectName('transcriptBody')
         self.transcript_area.setReadOnly(True)
-        self.transcript_area.setPlaceholderText("Listen now. Revisit every detail later.\n\nStart recording or import audio from the More menu. Your transcript will appear here.")
-        self.stack.addWidget(self.transcript_area)
+        self.transcript_area.setPlaceholderText('Open Notes to start a recording, or choose Import audio.')
+        self.transcript_area.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.transcript_area.customContextMenuRequested.connect(self._transcript_menu)
+        self._transcript_viewport = self.transcript_area.viewport()
+        self._transcript_viewport.installEventFilter(self)
+        transcript_page = QWidget()
+        transcript_layout = QVBoxLayout(transcript_page)
+        transcript_layout.setContentsMargins(0, 0, 0, 0)
+        self.transcript_tools = TranscriptTools()
+        self.transcript_tools.changed.connect(self._save_active_lecture)
+        self.transcript_tools.changed.connect(self._refresh_speaker_controls)
+        self.transcript_tools.analyze_requested.connect(self._request_diarization)
+        self.transcript_tools.cancel_requested.connect(self._cancel_diarization)
+        self.transcript_tools.export_requested.connect(self._show_export_menu)
+        self.transcript_tools.bookmarks.clicked.connect(self._show_transcript_bookmarks)
+        transcript_layout.addWidget(self.transcript_tools)
+        self.transcript_navigation = TranscriptNavigator(self.transcript_area, transcript_page)
+        self.transcript_tools.find.clicked.connect(self._open_transcript_search)
+        self.transcript_tools.position_changed.connect(self.transcript_navigation.track_playback)
+        transcript_layout.addWidget(self.transcript_navigation)
+        self.speaker_panel = SpeakerPanel()
+        self.speaker_panel.filter_changed.connect(self._filter_transcript)
+        self.speaker_panel.sample_requested.connect(self._play_speaker_sample)
+        self.speaker_panel.rename_requested.connect(self._rename_speaker)
+        self.speaker_panel.merge_requested.connect(self._merge_speaker)
+        self.speaker_panel.assign_requested.connect(self._assign_transcript_selection)
+        self.speaker_panel.edit_requested.connect(self._edit_current_passage)
+        transcript_layout.addWidget(self.speaker_panel)
+        self._overlap_windows = []
+        self._overlap_rows = set()
+        transcript_layout.addWidget(self.transcript_area, 1)
+        self.transcript_save_status = label('', 'studioStatus')
+        self.transcript_save_status.hide()
+        transcript_layout.addWidget(self.transcript_save_status, alignment=Qt.AlignRight)
+        self.stack.addWidget(transcript_page)
 
         # Tab 2: Anki Flashcards
         self.flashcards_area = QTextEdit()
-        self.flashcards_area.setReadOnly(True)
-        self.flashcards_area.setPlaceholderText("Turn understanding into recall.\n\nCapture a lecture first, then choose Make flashcards to create your review material.")
-        self.stack.addWidget(self.flashcards_area)
+        self.flashcards_area.setAcceptRichText(False)
+        self.flashcards_area.setPlaceholderText(
+            'Generate flashcards, or enter one question and answer per line separated by a tab.')
+        cards_page = QWidget()
+        cards_layout = QVBoxLayout(cards_page)
+        cards_layout.setContentsMargins(0, 0, 0, 0)
+        card_actions = QHBoxLayout()
+        card_actions.addWidget(label('Flashcards', 'title'), 1)
+        for title, callback in (('Add card…', self._add_flashcard), ('Export TSV…', self._export_flashcards),
+                                ('Review due…', self._review_flashcards)):
+            card_button = QPushButton(title)
+            card_button.clicked.connect(callback)
+            card_actions.addWidget(card_button)
+        cards_layout.addLayout(card_actions)
+        cards_layout.addWidget(self.flashcards_area, 1)
+        self.stack.addWidget(cards_page)
 
         # Tab 3: Study Chat
         self.stack.addWidget(self._build_chat_tab())
@@ -776,11 +833,11 @@ class MeetingWindow(QDialog):
         # Tab 4: Weekly Timetable
         self.timetable_view = EliteTimetableView()
         self.timetable_view.select_class.connect(self._on_timetable_class_selected)
-        self.stack.addWidget(self.timetable_view)
+        self.stack.addScrollableWidget(self.timetable_view)
 
         from annie.gui.study_timer import StudyTimerPage
         self.study_page = StudyTimerPage(self)
-        self.stack.addWidget(self.study_page)
+        self.stack.addScrollableWidget(self.study_page)
         self.timetable_view.set_study_store(self.study_page.store)
         self.study_page.sessions_changed.connect(self.timetable_view.reload_local_sessions)
         self.study_page.timer_changed.connect(self._update_study_status)
@@ -788,19 +845,25 @@ class MeetingWindow(QDialog):
 
         from annie.gui.gpa_tracker import GpaTrackerPage
         self.gpa_page = GpaTrackerPage(self)
-        self.stack.addWidget(self.gpa_page)
+        self.stack.addScrollableWidget(self.gpa_page)
 
         from annie.gui.habit_tracker import HabitTrackerPage
         self.habits_page = HabitTrackerPage(self)
-        self.stack.addWidget(self.habits_page)
+        self.stack.addScrollableWidget(self.habits_page)
 
         from annie.gui.weekly_planner import WeeklyPlannerPage
         self.planner_page = WeeklyPlannerPage(self)
-        self.stack.addWidget(self.planner_page)
+        self.stack.addScrollableWidget(self.planner_page)
 
         from annie.gui.today import TodayPage
         self.today_page = TodayPage(self)
         self.today_page.navigate.connect(self._switch_tab)
+        self.today_page.library_requested.connect(self._open_library)
+        self.due_cards = QPushButton('Review flashcards')
+        self.due_cards.clicked.connect(self._review_flashcards)
+        self.today_page.layout().insertWidget(2, self.due_cards)
+        if hasattr(self.today_page, 'inbox_requested'):
+            self.today_page.inbox_requested.connect(self._open_deadline_inbox)
         self.today_page.study_requested.connect(self._start_daily_study)
         self.stack.addWidget(self.today_page)
         self.timetable_view.events_loaded.connect(self.today_page.set_events)
@@ -808,7 +871,7 @@ class MeetingWindow(QDialog):
         self.review_page = LectureReviewPage(self)
         self.review_page.actions_changed.connect(self.today_page.reload)
         self.review_page.evidence_requested.connect(self._show_transcript_evidence)
-        self.stack.addWidget(self.review_page)
+        self.stack.addScrollableWidget(self.review_page)
         from annie.gui.lecture_lab import LectureLabPage
         self.lab_page = LectureLabPage(self)
         self.lab_page.evidence_requested.connect(self._show_lab_evidence)
@@ -817,12 +880,34 @@ class MeetingWindow(QDialog):
         from annie.gui.campus_radar import RadarPage
         self.radar_page = RadarPage(self)
         self.radar_page.changes_updated.connect(self.today_page.reload)
-        self.stack.addWidget(self.radar_page)
+        self.stack.addScrollableWidget(self.radar_page)
 
         self.workspace_body = QBoxLayout(QBoxLayout.LeftToRight)
         self.workspace_body.setSpacing(12)
         self.workspace_body.addWidget(self.navigation)
-        self.workspace_body.addWidget(self.stack, 1)
+        content = QVBoxLayout()
+        content.setSpacing(8)
+        self.lecture_navigation = role(QFrame(), 'lectureNavigation')
+        lecture_bar = QHBoxLayout(self.lecture_navigation)
+        lecture_bar.setContentsMargins(5, 4, 5, 4)
+        lecture_bar.setSpacing(5)
+        self.lecture_buttons = {}
+        for index, title in zip(LECTURE_PAGES, ('Notes', 'Transcript', 'Flashcards')):
+            button = self._create_tab_btn(title, style='lectureNav')
+            button.clicked.connect(lambda checked=False, i=index: self._switch_tab(i))
+            self.lecture_buttons[index] = button
+            lecture_bar.addWidget(button)
+        lecture_bar.addStretch(1)
+        self.library_button = role(QPushButton('Library…'), 'quiet')
+        self.library_button.setToolTip('Open saved lectures')
+        self.library_button.clicked.connect(self._open_library)
+        lecture_bar.addWidget(self.library_button)
+        self.import_audio_button = role(QPushButton('Import audio…'), 'quiet')
+        self.import_audio_button.clicked.connect(self._import_audio)
+        lecture_bar.addWidget(self.import_audio_button)
+        content.addWidget(self.lecture_navigation)
+        content.addWidget(self.stack, 1)
+        self.workspace_body.addLayout(content, 1)
         layout.addLayout(self.workspace_body, 1)
 
         # ── 4. Bottom Clean Action Bar ───────────────────────
@@ -834,12 +919,11 @@ class MeetingWindow(QDialog):
         # Quick context input
         self.subject_input = QLineEdit()
         self.subject_input.setPlaceholderText("Course or topic…")
+        self.subject_input.setAccessibleName('Lecture course or topic')
         self.subject_input.setObjectName("courseContextInput")
         bottom_bar.addWidget(self.subject_input, 1)
-        for title, index in [('Transcript', 1), ('Review actions', 10)]:
-            button = QPushButton(title)
-            button.clicked.connect(lambda checked=False, i=index: self._switch_tab(i))
-            bottom_bar.addWidget(button)
+        self.lecture_save_status = label('', 'studioStatus')
+        bottom_bar.addWidget(self.lecture_save_status)
 
         # Gen Anki Cards Button
         self.gen_anki_btn = QPushButton("Make flashcards")
@@ -864,7 +948,7 @@ class MeetingWindow(QDialog):
         bottom_bar.addWidget(self.gen_anki_btn)
 
         # Export Menu Button (Copy, Obsidian .md, HTML/PDF, .txt)
-        self.export_btn = QPushButton("Export notes ▾")
+        self.export_btn = QPushButton("Export…")
         self.export_btn.setObjectName("exportButton")
         self.export_btn.setFixedHeight(38)
         self.export_btn.setMinimumWidth(110)
@@ -884,12 +968,17 @@ class MeetingWindow(QDialog):
             }}
         """)
         self.export_btn.clicked.connect(self._show_export_menu)
+        self.export_feedback_timer = QTimer(self, singleShot=True, interval=2000)
+        self.export_feedback_timer.timeout.connect(self._restore_export_label)
         bottom_bar.addWidget(self.export_btn)
 
         layout.addWidget(self.bottom_panel)
 
         self.worker = None
-        self._last_notes = ""
+        for editor in (self.user_scratchpad, self.notes_area, self.flashcards_area):
+            editor.textChanged.connect(self._lecture_edited)
+        self.subject_input.textEdited.connect(self._lecture_edited)
+        self.transcript_tools.display(self._lecture)
         self._load_classes()
         role(self.operation_status, "studioStatus")
         role(self.fuse_btn, "primary")
@@ -899,22 +988,23 @@ class MeetingWindow(QDialog):
             self._shortcuts.append(QShortcut(f"Ctrl+{index + 1}", self,
                 activated=lambda i=index: self._switch_tab(i)))
         self._shortcuts.append(QShortcut("Ctrl+Return", self, activated=self._fuse_notes))
+        self._shortcuts.append(QShortcut("F2", self.transcript_area,
+            context=Qt.WidgetWithChildrenShortcut, activated=self._edit_current_passage))
+        for key, callback in ((QKeySequence(QKeySequence.Find), self._open_transcript_search),
+                              ('F3', self.transcript_navigation.move_match),
+                              ('Shift+F3', lambda: self.transcript_navigation.move_match(-1))):
+            self._shortcuts.append(QShortcut(key, transcript_page,
+                context=Qt.WindowShortcut, activated=callback))
         self._switch_tab(9)
 
-    def _create_tab_btn(self, text: str, active: bool = False) -> QPushButton:
-        btn = QPushButton(text)
+    def _create_tab_btn(self, text: str, style='nav') -> QPushButton:
+        btn = role(QPushButton(text), style)
         btn.setFixedHeight(36)
         btn.setMinimumWidth(0)
         btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         btn.setCursor(Qt.PointingHandCursor)
-        self._style_tab_btn(btn, active)
-        return btn
-
-    def _style_tab_btn(self, btn: QPushButton, active: bool):
-        role(btn, "nav")
         btn.setCheckable(True)
-        btn.setChecked(active)
-        btn.setStyleSheet(STYLE)
+        return btn
 
     def _snap_to_left(self):
         """Ease the workspace into a predictable split-screen geometry."""
@@ -950,23 +1040,20 @@ class MeetingWindow(QDialog):
 
     def _update_pin_style(self):
         self.pin_btn.setText("On" if self._is_pinned else "Pin")
-        self.pin_btn.setStyleSheet("color: #C5ED87;" if self._is_pinned else "")
+        self.pin_btn.setStyleSheet(f"color: {EMERALD};" if self._is_pinned else "")
 
     def _switch_tab(self, index: int):
-        self.stack.setCurrentIndexAnimated(index)
-        self._style_tab_btn(self.tab_today_btn, index == 9)
-        self._style_tab_btn(self.tab_review_btn, index == 10)
-        self._style_tab_btn(self.tab_notes_btn, index == 0)
-        self._style_tab_btn(self.tab_transcript_btn, index == 1)
-        self._style_tab_btn(self.tab_flashcards_btn, index == 2)
-        self._style_tab_btn(self.tab_chat_btn, index == 3)
-        self._style_tab_btn(self.tab_schedule_btn, index == 4)
-        self._style_tab_btn(self.tab_study_btn, index == 5)
-        self._style_tab_btn(self.tab_gpa_btn, index == 6)
-        self._style_tab_btn(self.tab_habits_btn, index == 7)
-        self._style_tab_btn(self.tab_plan_btn, index == 8)
-        self.recording_panel.setVisible(index not in (5, 6, 7, 8, 9, 10, 11, 12))
-        self.bottom_panel.setVisible(index not in (5, 6, 7, 8, 9, 10, 11, 12))
+        self.stack.setCurrentIndex(index)
+        in_lecture = index in LECTURE_PAGES
+        if in_lecture:
+            self._last_lecture_page = index
+        for page, button in self.workspace_buttons.items():
+            button.setChecked(page == (0 if in_lecture else index))
+        for page, button in self.lecture_buttons.items():
+            button.setChecked(page == index)
+        self.lecture_navigation.setVisible(in_lecture)
+        self.bottom_panel.setVisible(index in (0, 2, 3))
+        self._refresh_audio_controls()
         if index == 12:
             self.radar_page.reload()
         if index == 7:
@@ -975,18 +1062,27 @@ class MeetingWindow(QDialog):
             self.planner_page.reload()
         if index == 9:
             self.today_page.reload()
+            self._refresh_due_cards()
         if index == 10:
-            self.review_page.set_transcript(self._transcript_segments,
-                course=self.subject_input.text().strip(), source_name=self._lecture_source_name,
-                lecture_date=self._lecture_date)
+            try:
+                self.review_page.set_transcript(self._lecture.get('source_segments', self._transcript_segments),
+                    course=self.subject_input.text().strip(), source_name=self._lecture_source_name,
+                    lecture_date=self._lecture_date)
+            except ValueError as exc:
+                self.review_page.set_transcript([])
+                self.review_page.status.setText(str(exc))
         if index == 6:
             self.gpa_page.reload()
         if index == 11:
             self.lab_page.set_study_action('')
-            self.lab_page.set_transcript(self._transcript_segments,
-                course=self.subject_input.text().strip(), source_name=self._lecture_source_name)
-        self.gen_anki_btn.setVisible(index in (0, 1, 2))
-        self.export_btn.setVisible(index in (0, 1, 2))
+            try:
+                self.lab_page.set_transcript(self._lecture.get('source_segments', self._transcript_segments),
+                    course=self.subject_input.text().strip(), source_name=self._lecture_source_name)
+            except ValueError as exc:
+                self.lab_page.set_transcript([])
+                self.lab_page.status.setText(str(exc))
+        self.gen_anki_btn.setVisible(index in (0, 2))
+        self.export_btn.setVisible(index == 0)
         if index == 4:
             self.timetable_view._refresh()
 
@@ -1006,23 +1102,20 @@ class MeetingWindow(QDialog):
             self.operation_status.setText(str(exc))
 
     def _show_lab_evidence(self, timestamp):
-        from annie.lecture_actions import transcript_fingerprint
         spec = self.lab_page.current_spec
-        if (not spec or not self._transcript_segments
-                or spec['fingerprint'] != transcript_fingerprint(self._transcript_segments)):
-            self.lab_page.status.setText('This lab has its own saved source. Its verified quote is shown in the lab; the active lecture is different.')
-            return
-        segment = next((s for s in self._transcript_segments if s['start'] <= timestamp <= s['end']), None)
-        self._switch_tab(1)
-        if segment:
-            cursor = self.transcript_area.document().find(segment['text'])
-            if not cursor.isNull():
-                self.transcript_area.setTextCursor(cursor)
-                self.transcript_area.ensureCursorVisible()
+        if spec:
+            self._open_evidence_source(spec.get('source_name'), timestamp)
 
     def _start_daily_study(self, subject):
         try:
-            if self.study_page.store.active():
+            active = self.study_page.store.active()
+            if active:
+                if active['subject'] != subject:
+                    answer = QMessageBox.question(self, 'Study session in progress',
+                        f"You are currently studying {active['subject']}. Open that session before starting {subject}?",
+                        QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+                    if answer != QMessageBox.Yes:
+                        return
                 self._switch_tab(5)
                 return
             saved = self.study_page.store.add_subject(subject)
@@ -1039,7 +1132,12 @@ class MeetingWindow(QDialog):
 
     def _open_deadline_inbox(self):
         from annie.gui.deadline_inbox import DeadlineInbox
-        DeadlineInbox(self).exec_()
+        dialog = DeadlineInbox(self)
+        if hasattr(dialog, 'saved_changed'):
+            dialog.saved_changed.connect(self.today_page.reload)
+            dialog.saved_changed.connect(self.review_page.reload)
+        dialog.exec_()
+        self.today_page.reload()
 
     def _open_studio_setup(self):
         if self._recording or self.has_running_jobs():
@@ -1051,6 +1149,33 @@ class MeetingWindow(QDialog):
             self.timetable_view._refresh(force=True)
             self.study_page.sync_pending()
             self.settings_changed.emit()
+
+    def _transcribing(self):
+        return bool(self.worker and (self.worker.isRunning() or self.worker in self._jobs))
+
+    def _open_audio_setup(self, _checked=False, *, models=False):
+        if self._transcribing():
+            self.operation_status.setText('Finish the recording or import before opening audio setup.')
+            return
+        if self._audio_setup is None:
+            from annie.gui.audio_setup import AudioSetup
+            self._audio_setup = AudioSetup(DATA_DIR, self)
+            self._audio_setup.speaker_model_changed.connect(self._select_speaker_model)
+            self._audio_setup.busy_changed.connect(self._refresh_audio_controls)
+        if not self._audio_setup.task:
+            from annie.config import WHISPER_MODEL
+            self._audio_setup.configure(self.audio_source_picker.currentData() or 'default',
+                self.audio_source_picker.currentText(), WHISPER_MODEL, self._diarization_model, show_models=models)
+        self._audio_setup.open()
+
+    def _select_speaker_model(self, model):
+        from annie.secure_storage import atomic_write
+        self._diarization_model = model
+        try:
+            atomic_write(DATA_DIR / 'speaker-model-folder.txt', model.encode('utf-8'))
+        except OSError:
+            self._audio_setup.speaker_status.setText('Ready for this session. The folder preference could not be saved.')
+        self._refresh_speaker_controls()
 
     def _open_profile_folder(self, name):
         from pathlib import Path
@@ -1065,26 +1190,144 @@ class MeetingWindow(QDialog):
         except OSError as exc:
             QMessageBox.warning(self, 'Open folder', str(exc))
 
-    def _open_saved_transcript(self):
-        if self.worker and self.worker.isRunning():
-            self.operation_status.setText('Finish the current transcription before opening another lecture.')
-            return
-        from annie.paths import DATA_DIR
-        from annie.lecture_archive import load_transcript
-        path, _ = QFileDialog.getOpenFileName(self, 'Open saved transcript', str(DATA_DIR / 'transcripts'), 'Lecture transcript (*.json)')
-        if not path:
-            return
+    @staticmethod
+    def _new_lecture(source, course='', day=None, audio=''):
+        return {'id': uuid.uuid4().hex, 'source_name': source, 'title': source,
+                'course': course, 'lecture_date': day.isoformat() if day else None,
+                'audio_path': audio, 'segments': [], 'complete': False}
+
+    def _lecture_edited(self, *_):
+        self._set_lecture_save_status('Unsaved changes')
+        self._lecture_timer.start()
+
+    def _set_lecture_save_status(self, text):
+        self.lecture_save_status.setText(text)
+        self.transcript_save_status.setText(text)
+        self.transcript_save_status.setVisible(bool(text))
+
+    def _snapshot_lecture(self):
+        values = {name: editor.toPlainText() for name, editor in (
+            ('scratchpad', self.user_scratchpad), ('notes', self.notes_area), ('cards', self.flashcards_area))}
+        previous = {name: self._lecture.get(name, '') for name in values}
+        if previous != values and any(previous.values()):
+            self._add_lecture_revision(previous)
+        self._lecture.update(values, course=self.subject_input.text().strip(), segments=self._transcript_segments)
+
+    def _add_lecture_revision(self, previous):
+        history = self._lecture.setdefault('revisions', [])
+        history.append({'saved_at': datetime.datetime.now().isoformat(timespec='seconds'), **previous})
+        del history[:-25]
+
+    def _persist_lecture(self, document):
         try:
-            data = load_transcript(path)
-            self._transcript_segments = data['segments']
-            self._lecture_source_name = data['source_name']
-            self._lecture_date = datetime.date.fromisoformat(data['lecture_date']) if data.get('lecture_date') else None
-            self.subject_input.setText(data.get('course', ''))
-            self.transcript_area.setPlainText('\n'.join(f"[{item['start']:.1f}s] {item['text']}" for item in self._transcript_segments))
-            self._last_transcript = self.transcript_area.toPlainText()
-            self._switch_tab(10)
+            save_lecture(DATA_DIR, document)
+            return True
+        except (OSError, ValueError, TypeError) as exc:
+            self.operation_status.setText(f'Lecture could not be saved: {exc}')
+            return False
+
+    def _save_active_lecture(self):
+        self._lecture_timer.stop()
+        self._snapshot_lecture()
+        if not any(self._lecture.get(key) for key in ('segments', 'audio_path', 'notes', 'scratchpad', 'cards', 'chat', 'past_chats', 'bookmarks')) and self._lecture['title'] == 'Untitled lecture':
+            self._set_lecture_save_status('')
+            return True
+        saved = self._persist_lecture(self._lecture)
+        self._set_lecture_save_status('Saved locally' if saved else 'Changes not saved')
+        return saved
+
+    def _activate_lecture(self, document):
+        if not self._save_active_lecture():
+            return False
+        self._open_lectures[self._lecture['id']] = self._lecture
+        self._set_lecture_save_status('Saved locally' if 'version' in document else '')
+        self._lecture = document = self._open_lectures.setdefault(document['id'], document)
+        self._lecture.setdefault('title', document['source_name'])
+        self._lecture_source_name = document['source_name']
+        self._lecture_date = datetime.date.fromisoformat(document['lecture_date']) if document.get('lecture_date') else None
+        self._transcript_segments = document['segments']
+        self.transcript_navigation.close_search()
+        self.transcript_navigation.track_playback(None)
+        self.speaker_panel.filters.blockSignals(True)
+        self.speaker_panel.filters.setCurrentIndex(0)
+        self.speaker_panel.filters.blockSignals(False)
+        self.subject_input.setText(document.get('course', ''))
+        for name, editor in (('scratchpad', self.user_scratchpad), ('notes', self.notes_area), ('cards', self.flashcards_area)):
+            blocked = editor.blockSignals(True)
+            editor.setPlainText(document.get(name, ''))
+            editor.blockSignals(blocked)
+        self._render_transcript()
+        self._render_chat()
+        self.transcript_tools.display(document)
+        self.transcript_navigation.track_playback(self.transcript_tools.current_time())
+        self._refresh_speaker_controls()
+        return True
+
+    def _open_library(self):
+        if self.worker and (self.worker.isRunning() or self.worker in self._jobs):
+            self.operation_status.setText('Finish transcription before opening another lecture.')
+            return
+        if not self._save_active_lecture():
+            return
+        dialog = LectureLibrary(DATA_DIR, self)
+        apply_theme(dialog)
+        if dialog.exec_() == QDialog.Accepted:
+            path, start = dialog.selected
+            self._open_lecture_path(path, start)
+
+    def _open_saved_transcript(self):
+        if self.worker and (self.worker.isRunning() or self.worker in self._jobs):
+            self.operation_status.setText('Finish transcription before opening another lecture.')
+            return
+        path, _ = QFileDialog.getOpenFileName(self, 'Open saved transcript', str(DATA_DIR / 'transcripts'), 'Lecture transcript (*.json)')
+        if path:
+            self._open_lecture_path(path)
+
+    def _open_lecture_path(self, path, start=None):
+        try:
+            if self._activate_lecture(load_transcript(path)):
+                self._switch_tab(1)
+                if start is not None:
+                    self._seek_transcript(start)
+                return True
         except (ValueError, OSError) as exc:
             self.operation_status.setText(str(exc))
+        return False
+
+    def _edit_lecture_details(self):
+        self._snapshot_lecture()
+        dialog = LectureDetails(self._lecture, self)
+        apply_theme(dialog)
+        if dialog.exec_() == QDialog.Accepted:
+            self._lecture.update(dialog.values)
+            self.subject_input.setText(dialog.values['course'])
+            raw_date = dialog.values['lecture_date']
+            self._lecture_date = datetime.date.fromisoformat(raw_date) if raw_date else None
+            self.transcript_tools.display(self._lecture)
+            self._save_active_lecture()
+
+    def _restore_lecture_revision(self):
+        self._save_active_lecture()
+        history = self._lecture.get('revisions', [])
+        labels = [f"{i+1}. {row['saved_at']}" for i, row in enumerate(history)]
+        if not labels:
+            self.operation_status.setText('This lecture has no previous saved edits.')
+            return
+        choice, confirmed = QInputDialog.getItem(self, 'Lecture history', 'Restore a version', labels, len(labels)-1, False)
+        if not confirmed:
+            return
+        revision = history[labels.index(choice)]
+        for name, editor in (('scratchpad', self.user_scratchpad), ('notes', self.notes_area), ('cards', self.flashcards_area)):
+            if name in revision:
+                editor.setPlainText(revision[name])
+        if 'segments' in revision:
+            self._add_lecture_revision({'segments': [dict(item) for item in self._transcript_segments],
+                                        'speaker_names': dict(self._lecture.get('speaker_names', {}))})
+            self._transcript_segments[:] = deepcopy(revision['segments'])
+            self._lecture['speaker_names'] = dict(revision.get('speaker_names', {}))
+            self._lecture['speaker_reviewed'] = True
+            self._render_transcript()
+        self._save_active_lecture()
 
     def _build_chat_tab(self) -> QWidget:
         box = QWidget()
@@ -1092,6 +1335,16 @@ class MeetingWindow(QDialog):
         vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(10)
 
+        settings = QHBoxLayout()
+        self.use_chat_source = QCheckBox('Include this lecture in the next request')
+        settings.addWidget(self.use_chat_source, 1)
+        restore_chat = QPushButton('Conversations…')
+        restore_chat.clicked.connect(self._restore_chat)
+        settings.addWidget(restore_chat)
+        clear_chat = QPushButton('New conversation')
+        clear_chat.clicked.connect(self._new_chat)
+        settings.addWidget(clear_chat)
+        vbox.addLayout(settings)
         self.chat_history = QTextEdit()
         self.chat_history.setReadOnly(True)
         self.chat_history.setPlaceholderText("Think it through with Annie.\n\nAsk for an explanation, work through a problem, or explore a new idea.")
@@ -1105,7 +1358,7 @@ class MeetingWindow(QDialog):
         self.chat_input.returnPressed.connect(self._send_chat)
         in_row.addWidget(self.chat_input, 1)
 
-        send_btn = QPushButton("Send")
+        send_btn = self.send_chat_btn = QPushButton("Send")
         send_btn.setFixedHeight(36)
         send_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1166,43 +1419,32 @@ class MeetingWindow(QDialog):
         self._switch_tab(0)
 
     def _build_notes_fusion_tab(self) -> QWidget:
-        self._note_hints = []
         self.notes_splitter = QSplitter(Qt.Horizontal)
         self.notes_splitter.setChildrenCollapsible(False)
-        self.notes_splitter.setHandleWidth(5)
-        for index, (title, hint) in enumerate((
-            ("Your highlights", "Capture what matters while you listen."),
-            ("Study notes", "Your lecture, organized for revision."))):
-            panel = QFrame()
-            panel.setObjectName("notesPanel")
-            panel.setStyleSheet(f"QFrame#notesPanel {{background: white; border: 1px solid {BORDER_COLOR}; border-radius: 12px;}} QLabel {{border: none; background: transparent;}}")
+        self.notes_splitter.setHandleWidth(9)
+        for index, title in enumerate(('Your highlights', 'Study notes')):
+            panel = role(QFrame(), 'notesInput' if index == 0 else 'notesOutput')
             column = QVBoxLayout(panel)
-            column.setContentsMargins(16, 16, 16, 16)
-            label = role(QLabel(title), "section")
-            label.setStyleSheet(f"font-size: 17px; font-weight: 600; color: {TEXT_MAIN};")
-            column.addWidget(label)
-            description = role(QLabel(hint), "muted")
-            self._note_hints.append(description)
-            description.setWordWrap(True)
-            description.setStyleSheet(f"font-size: 12px; color: {TEXT_SUB};")
-            column.addWidget(description)
+            column.setContentsMargins(14, 12, 14, 12)
+            heading = QHBoxLayout()
+            heading.addWidget(label(title, 'section'), 1)
+            column.addLayout(heading)
             editor = role(QTextEdit(), "paper")
             editor.setMinimumSize(100, 60)
-            editor.setStyleSheet(f"QTextEdit {{background: white; color: {TEXT_MAIN}; border: none; padding: 4px; font-size: 14px; selection-background-color: #A7F3D0;}}")
             column.addWidget(editor, 1)
             if index == 0:
                 self.user_scratchpad = editor
                 editor.setAccessibleName("Your lecture highlights")
-                editor.setPlaceholderText("Add a key idea, a question, or a reminder…\n\n• Concepts to revisit\n• Examples from class\n• Upcoming deadlines")
+                editor.setPlaceholderText('Add key ideas, questions, or reminders…')
+            else:
+                self.notes_area = editor
+                editor.setAcceptRichText(False)
+                editor.setAccessibleName("Generated study notes")
+                editor.setPlaceholderText('Create study notes from your transcript or highlights, or write your own.')
                 self.fuse_btn = QPushButton("Create study notes")
                 self.fuse_btn.clicked.connect(self._fuse_notes)
                 self.fuse_btn.setToolTip("Combine your highlights with the lecture transcript")
-                column.addWidget(self.fuse_btn)
-            else:
-                self.notes_area = editor
-                editor.setReadOnly(True)
-                editor.setAccessibleName("Generated study notes")
-                editor.setPlaceholderText("A clearer view of your lecture starts here.\n\nRecord a lecture or add your highlights, then create study notes.")
+                heading.addWidget(self.fuse_btn)
             self.notes_splitter.addWidget(panel)
         self.notes_splitter.setSizes([380, 620])
         return self.notes_splitter
@@ -1210,13 +1452,19 @@ class MeetingWindow(QDialog):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, "notes_splitter"):
-            for hint in self._note_hints:
-                hint.setVisible(self.height() >= 620)
             compact = self.width() < 900
+            self.studio_layout.setContentsMargins(*((16, 10, 16, 10) if compact else (22, 18, 22, 18)))
+            self.studio_layout.setSpacing(8 if compact else 12)
+            self.recording_panel.setMinimumHeight(68 if compact else 76)
+            self.nav_layout.setContentsMargins(8, 6 if compact else 10, 8, 6 if compact else 8)
+            self.signal_widget.setFixedWidth(44 if compact else 72)
+            self.updates_panel.check_button.setVisible(not compact)
+            self.gpa_page.set_compact(self.width() < 760)
+            self.audio_source_picker.setToolTip(self.audio_source_picker.currentText())
             self.workspace_body.setDirection(QBoxLayout.TopToBottom if compact else QBoxLayout.LeftToRight)
             self.nav_layout.setDirection(QBoxLayout.LeftToRight if compact else QBoxLayout.TopToBottom)
-            self.nav_caption.setVisible(not compact)
-            self.navigation.setFixedWidth(self.width() - 44 if compact else 172)
+            self.navigation.setMinimumWidth(0 if compact else 172)
+            self.navigation.setMaximumWidth(16777215 if compact else 172)
             self.navigation.setMaximumHeight(58 if compact else 16777215)
             orientation = Qt.Vertical if self.width() < 800 and self.height() >= 700 else Qt.Horizontal
             if self.notes_splitter.orientation() != orientation:
@@ -1305,49 +1553,71 @@ class MeetingWindow(QDialog):
 
         subj = self.subject_input.text().strip()
         self._fusion_thread = NoteFusionThread(transcript=transcript, context=subj, user_notes=user_notes, template="lecture")
-        self._fusion_thread.finished.connect(self._on_fusion_finished)
+        document = self._lecture
+        expected = self.notes_area.toPlainText()
+        self._fusion_thread.finished.connect(lambda text: self._on_fusion_finished(text, document, expected))
         self._fusion_thread.error.connect(self._on_fusion_error)
         self._start_job(self._fusion_thread)
 
-    def _on_fusion_finished(self, notes_text: str):
+    def _on_fusion_finished(self, notes_text: str, document=None, expected=None):
         self.fuse_btn.setEnabled(True)
         self.fuse_btn.setText("Create study notes")
-        self._last_notes = notes_text.strip()
-        self.notes_area.setPlainText(self._last_notes)
+        self._store_generated('notes', notes_text, document, expected=expected)
+
+    def _store_generated(self, key, text, document=None, *, expected=None):
+        document = self._lecture if document is None else document
+        visible = document is self._lecture
+        value = text.strip()
+        if visible:
+            self._snapshot_lecture()
+        previous = document.get(key, '')
+        if expected is not None and previous != expected:
+            history = document.setdefault('revisions', [])
+            history.append({'saved_at': datetime.datetime.now().isoformat(timespec='seconds'), key: value})
+            del history[:-25]
+            self._persist_lecture(document)
+            if visible:
+                self.operation_status.setText('Your edits were kept. The generated version is in lecture history.')
+            return
+        if visible:
+            editor = self.notes_area if key == 'notes' else self.flashcards_area
+            editor.setPlainText(value)
+            self._save_active_lecture()
+        else:
+            previous = document.get(key)
+            if previous and previous != text.strip():
+                history = document.setdefault('revisions', [])
+                history.append({'saved_at': datetime.datetime.now().isoformat(timespec='seconds'), key: previous})
+                del history[:-25]
+            document[key] = text.strip()
+            self._persist_lecture(document)
 
     def _on_fusion_error(self, err: str):
         self.fuse_btn.setEnabled(True)
         self.fuse_btn.setText("Create study notes")
-        self.notes_area.setPlainText(f"⚠️ Note Fusion Error: {err}")
+        self.operation_status.setText(f"Study notes could not be generated: {err}")
 
     def _toggle_recording(self):
         if self._recording:
             # Stop
-            self.record_btn.setText("Finishing transcript…")
-            self.record_btn.setEnabled(False)
-            self._set_record_button_state("busy")
             self.worker.user_notes = self.user_scratchpad.toPlainText().strip()
             self.worker.stop()
             self._recording = False
             self.signal_widget.set_active(False)
+            self._set_capture_status('Stopping input…')
             self.meeting_state_changed.emit(False)
+            self._refresh_audio_controls()
         else:
-            if self.worker and self.worker.isRunning():
+            if self._transcribing() or (self._audio_setup and self._audio_setup.task):
                 return
-            # Start
-            self._last_transcript = ""
-            self._transcript_segments = []
-            self._lecture_source_name = f"Lecture {datetime.datetime.now():%Y-%m-%d %H:%M} · {uuid.uuid4().hex[:8]}"
             from annie.planner import TZ
-            self._lecture_date = datetime.datetime.now(TZ).date()
-            self._archived_fingerprint = ''
-            self.transcript_area.clear()
-            self.notes_area.clear()
-            self.flashcards_area.clear()
+            now = datetime.datetime.now(TZ)
+            source_name = f"Lecture {now:%Y-%m-%d %H:%M} · {uuid.uuid4().hex[:8]}"
+            if not self._activate_lecture(self._new_lecture(source_name, self.subject_input.text().strip(), now.date())):
+                return
 
-            self.record_btn.setText("Stop recording")
-            self._set_record_button_state("recording")
-            self.signal_widget.set_active(True)
+            self._set_capture_status('Opening audio source…')
+            self.operation_status.setText('Processing · Preparing transcription')
 
             subject = self.subject_input.text().strip()
             user_notes = self.user_scratchpad.toPlainText().strip()
@@ -1364,16 +1634,20 @@ class MeetingWindow(QDialog):
             if hasattr(self.worker, 'audio_level'):
                 self.worker.audio_level.connect(self.signal_widget.update_audio_level)
             if hasattr(self.worker, 'capture_finished'):
+                self.worker.capture_started.connect(self._on_capture_started)
                 self.worker.capture_finished.connect(self._on_capture_finished)
                 self.worker.backlog_updated.connect(self._on_backlog)
                 self.worker.recording_saved.connect(self._on_recording_saved)
             self._recording = True
+            self._recording_session = True
             self.meeting_state_changed.emit(True)
             self._start_job(self.worker)
+            self._refresh_audio_controls()
+            self.stop_recording_btn.setFocus()
 
     def _import_audio(self):
-        if self.worker and self.worker.isRunning():
-            self.operation_status.setText("Finish the current recording or import first.")
+        if self._transcribing() or (self._audio_setup and self._audio_setup.task):
+            self.operation_status.setText("Finish the current audio task first.")
             return
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Audio File", "", "Audio & Video (*.wav *.mp3 *.m4a *.aac *.flac *.ogg *.webm *.mp4);;All Files (*)"
@@ -1381,14 +1655,9 @@ class MeetingWindow(QDialog):
         if not file_path:
             return
 
-        self.transcript_area.clear()
-        self._last_transcript = ""
-        self._transcript_segments = []
-        self._lecture_source_name = f"{os.path.basename(file_path)} · {uuid.uuid4().hex[:8]}"
-        self._lecture_date = None
-        self._archived_fingerprint = ''
-        self.notes_area.clear()
-        self.flashcards_area.clear()
+        source_name = f"{os.path.basename(file_path)} · {uuid.uuid4().hex[:8]}"
+        if not self._activate_lecture(self._new_lecture(source_name, self.subject_input.text().strip(), audio=file_path)):
+            return
 
         subj = self.subject_input.text().strip()
         user_notes = self.user_scratchpad.toPlainText().strip()
@@ -1399,6 +1668,8 @@ class MeetingWindow(QDialog):
         self.worker.summary_ready.connect(self._on_summary)
         self.worker.status_changed.connect(self._on_worker_status)
         self._connect_transcription_events(self.worker)
+        self._set_capture_status('')
+        self.operation_status.setText('Processing · Preparing imported audio')
         self._start_job(self.worker)
         self._switch_tab(1)
 
@@ -1411,16 +1682,19 @@ class MeetingWindow(QDialog):
 
         subj = self.subject_input.text().strip()
         self._slide_thread = SlideVisionThread(file_path, subj)
-        self._slide_thread.finished.connect(self._on_slide_finished)
+        document = self._lecture
+        self._slide_thread.finished.connect(lambda path, text: self._on_slide_finished(path, text, document))
         self._slide_thread.error.connect(self._on_slide_error)
         self._start_job(self._slide_thread)
 
-    def _on_slide_finished(self, p, text):
-        block = f"\n\n📸 **SLIDE / WHITEBOARD ANALYSIS ({os.path.basename(p)}):**\n{text}\n"
-        self.transcript_area.append(block)
-        self.notes_area.append(block)
-        self.operation_status.setText("Slide analysis added to the transcript and notes.")
-        self._switch_tab(0)
+    def _on_slide_finished(self, p, text, document=None):
+        document = self._lecture if document is None else document
+        block = f"\n\nSLIDE / WHITEBOARD ANALYSIS ({os.path.basename(p)})\n{text}\n"
+        current = self.notes_area.toPlainText() if document is self._lecture else document.get('notes', '')
+        self._store_generated('notes', current + block, document)
+        if document is self._lecture:
+            self.operation_status.setText("Slide analysis added to study notes.")
+            self._switch_tab(0)
 
     def _on_slide_error(self, err):
         self.operation_status.setText(f"Slide analysis failed: {err}")
@@ -1471,15 +1745,17 @@ class MeetingWindow(QDialog):
             self.subject_input.text().strip(),
         )
         self._prep_thread.status.connect(self.operation_status.setText)
-        self._prep_thread.finished.connect(self._on_prep_guide_finished)
+        document = self._lecture
+        expected = self.notes_area.toPlainText()
+        self._prep_thread.finished.connect(lambda guide: self._on_prep_guide_finished(guide, document, expected))
         self._prep_thread.error.connect(self._on_prep_guide_error)
         self._start_job(self._prep_thread)
 
-    def _on_prep_guide_finished(self, guide):
-        self._last_notes = guide.strip()
-        self.notes_area.setPlainText(self._last_notes)
-        self.operation_status.setText("Exam preparation guide ready.")
-        self._switch_tab(0)
+    def _on_prep_guide_finished(self, guide, document=None, expected=None):
+        self._store_generated('notes', guide, document, expected=expected)
+        if document is None or document is self._lecture:
+            self.operation_status.setText("Exam preparation guide ready.")
+            self._switch_tab(0)
 
     def _on_prep_guide_error(self, err):
         self.operation_status.setText(f"Prep guide failed: {err}")
@@ -1488,7 +1764,7 @@ class MeetingWindow(QDialog):
     def _on_transcript(self, text: str):
         cursor = self.transcript_area.textCursor()
         cursor.movePosition(cursor.End)
-        cursor.insertText(text)
+        cursor.insertText(text, QTextCharFormat())
         self.transcript_area.setTextCursor(cursor)
         self._last_transcript = self.transcript_area.toPlainText()
 
@@ -1496,7 +1772,7 @@ class MeetingWindow(QDialog):
         worker.transcript_segment.connect(self._on_transcript_segment)
         worker.metrics_updated.connect(self._on_transcription_metrics)
         worker.partial_transcript_updated.connect(
-            lambda text: self.operation_status.setText(f'Listening · {text[-180:]}') if text else None)
+            lambda text: self.operation_status.setText(f'Processing · {text[-140:]}') if text else None)
         worker.transcript_ready.connect(self._on_transcription_ready)
 
     def _on_transcript_segment(self, segment):
@@ -1513,59 +1789,471 @@ class MeetingWindow(QDialog):
         if metrics.get('audio_interruptions'):
             parts.append(f"{metrics['audio_interruptions']} audio interruptions")
         if parts:
-            self.operation_status.setText(' · '.join(parts))
+            self.operation_status.setText('Processing · ' + ' · '.join(parts))
 
     def _on_transcription_ready(self):
-        self.record_btn.setText('Start recording')
-        self.record_btn.setEnabled(True)
-        self._set_record_button_state('idle')
-        self.review_page.set_transcript(self._transcript_segments,
-            course=self.subject_input.text().strip(), source_name=self._lecture_source_name,
-            lecture_date=self._lecture_date)
-        self._save_transcript_archive(complete=True)
+        self._lecture['complete'] = True
+        self._render_transcript()
+        self._save_active_lecture()
+        self.transcript_tools.display(self._lecture)
         self._switch_tab(1)
 
     def _save_transcript_archive(self, complete=False):
-        if not self._transcript_segments:
-            return
-        from annie.lecture_actions import transcript_fingerprint
-        from annie.lecture_archive import save_transcript
-        from annie.paths import DATA_DIR
-        try:
-            fingerprint = transcript_fingerprint(self._transcript_segments)
-            if fingerprint == self._archived_fingerprint:
-                return
-            archive = save_transcript(DATA_DIR, self._transcript_segments, self._lecture_source_name,
-                                      self.subject_input.text().strip(), complete, self._lecture_date)
-            self._archived_fingerprint = fingerprint
-            self.transcript_area.setToolTip(f'Saved transcript: {archive}')
-        except (ValueError, OSError) as exc:
-            self.operation_status.setText(f'Transcript could not be saved: {exc}')
+        if complete:
+            self._lecture['complete'] = True
+        self._render_transcript()
+        self.transcript_tools.display(self._lecture)
+        self._save_active_lecture()
+        self._refresh_speaker_controls()
 
-    def _show_transcript_evidence(self, timestamp):
-        action = self.review_page._current()
-        if action and action.get('source_name') != self._lecture_source_name:
-            self.review_page.status.setText('This finding belongs to an earlier lecture. Its saved quote is shown here; open that recording to listen.')
+    def _render_transcript(self, *, refresh_speakers=True):
+        if refresh_speakers:
+            self._refresh_speaker_controls()
+        self._transcript_ranges = []
+        self.transcript_area.clear()
+        cursor = self.transcript_area.textCursor()
+        passage_format = QTextBlockFormat()
+        passage_format.setBottomMargin(10)
+        passage_format.setLineHeight(128, QTextBlockFormat.ProportionalHeight)
+        clock_format = QTextCharFormat()
+        clock_format.setForeground(QColor(TEXT_DIM))
+        clock_format.setFontPointSize(10)
+        clock_format.setFontWeight(QFont.DemiBold)
+        speaker_format = QTextCharFormat()
+        speaker_format.setForeground(QColor(EMERALD))
+        speaker_format.setFontWeight(QFont.DemiBold)
+        speech_format = QTextCharFormat()
+        speech_format.setForeground(QColor(TEXT_MAIN))
+        displays = self._lecture.get('speaker_names', {})
+        kind, selected = self.speaker_panel.selection()
+        lines = []
+        visible_passages = []
+        for segment in self._transcript_segments:
+            identity = segment.get('speaker', '')
+            speaker = displays.get(identity, identity)
+            start = segment['start']
+            text = segment.get('edited_text', segment['text'])
+            speaker_prefix = f'{speaker} · ' if speaker else ''
+            lines.append(f'[{timestamp(start)}] {speaker_prefix}{text}')
+            if (kind == 'speaker' and identity != selected or kind == 'uncertain' and identity
+                    or kind == 'overlap' and segment['id'] not in self._overlap_rows):
+                continue
+            if cursor.position():
+                cursor.insertBlock(passage_format, speech_format)
+            else:
+                cursor.setBlockFormat(passage_format)
+            begin = cursor.position()
+            clock_format.setToolTip(f'Play from {timestamp(start)}')
+            cursor.insertText(playback_time(start) + '   ', clock_format)
+            cursor.insertText(speaker_prefix, speaker_format)
+            text_start = cursor.position()
+            visible_text = text.replace('\r\n', '\n').replace('\r', '\n')
+            cursor.insertText(visible_text, speech_format)
+            self._transcript_ranges.append((begin, cursor.position(), segment))
+            visible_passages.append((begin, cursor.position(), start, segment['end'], text_start, visible_text))
+        if kind == 'all':
+            placeholder = 'Open Notes to start a recording, or choose Import audio.'
+        else:
+            placeholder = 'No passages match this filter.'
+        self.transcript_area.setPlaceholderText(placeholder)
+        cursor.setPosition(0)
+        self.transcript_area.setTextCursor(cursor)
+        self._last_transcript = '\n'.join(lines)
+        self.transcript_navigation.set_passages(visible_passages)
+
+    def _filter_transcript(self):
+        self._render_transcript(refresh_speakers=False)
+
+    def _open_transcript_search(self):
+        if self.transcript_tools.find.isEnabled():
+            self.transcript_navigation.open_search()
+
+    def _show_transcript_bookmarks(self):
+        document = self._lecture
+        saved = document.get('bookmarks', [])
+        selection = self._selected_passages()
+        passage = selection[0]['start'] if len(selection) == 1 else None
+        dialog = TranscriptBookmarks(saved, self.transcript_tools.current_time(), passage, self)
+        apply_theme(dialog)
+        if dialog.exec_() != QDialog.Accepted or document is not self._lecture:
             return
-        segment = next((item for item in self._transcript_segments
-                        if item['start'] <= timestamp <= item['end']), None)
-        self._switch_tab(1)
-        if segment:
-            cursor = self.transcript_area.document().find(segment['text'])
-            if not cursor.isNull():
-                self.transcript_area.setTextCursor(cursor)
-                self.transcript_area.ensureCursorVisible()
+        if dialog.bookmarks != saved:
+            document['bookmarks'] = dialog.bookmarks
+            if not self._save_active_lecture():
+                document['bookmarks'] = saved
+                return
+        if dialog.jump_time is not None:
+            self._seek_transcript(dialog.jump_time)
+            self.transcript_tools.jump_to(dialog.jump_time)
+
+    def _play_speaker_sample(self, identity):
+        from annie.diarization import speaker_voice_sample
+        sample = speaker_voice_sample(self._transcript_segments, identity, self._overlap_windows)
+        if sample:
+            self._seek_transcript(sample[0])
+            self.transcript_tools.play_at(*sample)
+        else:
+            self.transcript_tools.set_status('No clean voice sample is available for this speaker.')
+
+    def _selected_passages(self):
+        cursor = self.transcript_area.textCursor()
+        if cursor.hasSelection():
+            return [row for start, end, row in self._transcript_ranges
+                    if start < cursor.selectionEnd() and end > cursor.selectionStart()]
+        return [row for start, end, row in self._transcript_ranges if start <= cursor.position() <= end]
+
+    def _edit_current_passage(self):
+        if self._transcribing():
+            return
+        rows = self._selected_passages()
+        if len(rows) == 1:
+            self._edit_passage(rows[0])
+        elif rows:
+            self.transcript_tools.set_status('Select one passage to edit its text.')
+
+    def _assign_transcript_selection(self):
+        if self._transcribing():
+            return
+        rows = self._selected_passages()
+        if rows:
+            self._assign_passages(rows)
+
+    def eventFilter(self, watched, event):
+        if (watched is getattr(self, '_transcript_viewport', None)
+                and event.type() in (QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick) and event.button() == Qt.LeftButton):
+            point = self.transcript_area.cursorForPosition(event.pos()).position()
+            double = event.type() == QEvent.MouseButtonDblClick
+            segment = next((row for left, right, row in self._transcript_ranges
+                            if left <= point <= (right if double else left + len(playback_time(row['start'])))), None)
+            if segment:
+                self._seek_transcript(segment['start'], play=True)
+                return True
+        return super().eventFilter(watched, event)
+
+    def _transcript_menu(self, point):
+        cursor = self.transcript_area.cursorForPosition(point)
+        current = next((row for start, end, row in self._transcript_ranges if start <= cursor.position() <= end), None)
+        menu = self.transcript_area.createStandardContextMenu()
+        busy = self.worker and (self.worker.isRunning() or self.worker in self._jobs)
+        if current and not busy:
+            selected = self.transcript_area.textCursor()
+            rows = [row for start, end, row in self._transcript_ranges
+                    if selected.hasSelection() and start < selected.selectionEnd() and end > selected.selectionStart()]
+            menu.addSeparator()
+            menu.addAction('Play this passage', lambda: self._seek_transcript(current['start'], play=True))
+            menu.addAction('Edit passage text…', lambda: self._edit_passage(current))
+            menu.addAction('Assign selected passage(s)…', lambda: self._assign_passages(rows or [current]))
+            if current.get('speaker'):
+                menu.addAction('Rename all passages by this speaker…', lambda: self._rename_speaker(current['speaker']))
+                menu.addAction('Merge this speaker into another…', lambda: self._merge_speaker(current['speaker']))
+        menu.exec_(self.transcript_area.viewport().mapToGlobal(point))
+
+    def _track_transcript_revision(self):
+        self._add_lecture_revision({'segments': deepcopy(self._transcript_segments),
+                                    'speaker_names': dict(self._lecture.get('speaker_names', {}))})
+
+    def _finish_transcript_edit(self):
+        self._lecture['speaker_reviewed'] = True
+        self._render_transcript()
+        self._save_active_lecture()
+
+    def _edit_passage(self, current):
+        text, ok = QInputDialog.getMultiLineText(self, 'Edit passage', 'Transcript text',
+                                               current.get('edited_text', current['text']))
+        if ok and text.strip():
+            self._track_transcript_revision()
+            current['edited_text'] = text.strip()
+            self._render_transcript()
+            self._save_active_lecture()
+            self.review_page.status.setText('A local transcript edit was saved. Source quotes still refer to the original recording. Recheck any finding affected by the edit.')
+
+    def _speaker_options(self):
+        names = self._lecture.get('speaker_names', {})
+        return {f'{names.get(identity, identity)} [{identity}]': identity for identity in
+                sorted({row.get('speaker') for row in self._transcript_segments if row.get('speaker')})}
+
+    def _assign_passages(self, rows):
+        options = self._speaker_options()
+        new = 'Create a speaker…'
+        clear = 'Leave unassigned'
+        available = [*options, new, clear] if options else [new, clear]
+        choice, ok = QInputDialog.getItem(self, 'Assign speaker', 'Speaker', available, 0, False)
+        if not ok:
+            return
+        name = ''
+        if choice == new:
+            name = self.transcript_tools.choose_label(f'Speaker {len(options)+1}')
+            if not name:
+                return
+            identity = f'manual-{uuid.uuid4().hex[:8]}'
+        else:
+            identity = options.get(choice, '')
+        if all(row.get('speaker', '') == identity for row in rows):
+            return
+        self._track_transcript_revision()
+        if name:
+            self._lecture.setdefault('speaker_names', {})[identity] = name
+        for row in rows:
+            row['speaker'] = identity
+        self._finish_transcript_edit()
+
+    def _rename_speaker(self, identity):
+        names = self._lecture.setdefault('speaker_names', {})
+        name = self.transcript_tools.choose_label(names.get(identity, identity))
+        if name:
+            self._track_transcript_revision()
+            names[identity] = name
+            self._finish_transcript_edit()
+
+    def _merge_speaker(self, source):
+        options = {key: value for key, value in self._speaker_options().items() if value != source}
+        if not options:
+            self.transcript_tools.set_status('There is no other speaker to merge into.')
+            return
+        choice, ok = QInputDialog.getItem(self, 'Merge speaker', 'Merge all passages into', list(options), 0, False)
+        if ok:
+            self._track_transcript_revision()
+            for row in self._transcript_segments:
+                if row.get('speaker') == source:
+                    row['speaker'] = options[choice]
+            self._lecture.get('speaker_names', {}).pop(source, None)
+            self._finish_transcript_edit()
+
+    def _refresh_speaker_controls(self):
+        from annie.diarization import diarization_ready, overlap_windows, overlapping_passages
+        tools = self.transcript_tools
+        running = self._speaker_job is not None
+        audio = self._lecture.get('audio_path')
+        has_audio = bool(audio and Path(audio).is_file())
+        editable = not self._transcribing()
+        tools.find.setEnabled(editable and bool(self._transcript_segments))
+        tools.bookmarks.setEnabled(editable and bool(self._transcript_segments or self._lecture.get('bookmarks')
+                                                     or tools.play.isEnabled()))
+        tools.diarize.setEnabled(not running and editable and bool(self._transcript_segments) and has_audio)
+        tools.diarize.setText('Label speakers…' if diarization_ready(self._diarization_model) else 'Set up speakers…')
+        tools.cancel.setVisible(running)
+        self._overlap_windows = overlap_windows(self._lecture.get('speaker_turns'))
+        self._overlap_rows = overlapping_passages(self._transcript_segments, self._overlap_windows)
+        counts = Counter(row.get('speaker') or '' for row in self._transcript_segments)
+        uncertain = counts.pop('', 0)
+        self.speaker_panel.display(counts, self._lecture.get('speaker_names', {}),
+            len(self._transcript_segments), uncertain, len(self._overlap_rows), has_audio=tools.play.isEnabled(),
+            editable=editable)
+
+    @staticmethod
+    def _load_speaker_model():
+        try:
+            return (DATA_DIR / 'speaker-model-folder.txt').read_text(encoding='utf-8').strip() or None
+        except (OSError, UnicodeError):
+            return None
+
+    def _request_diarization(self):
+        from annie.diarization import diarization_ready
+        if self._speaker_job:
+            return
+        if not diarization_ready(self._diarization_model):
+            self._open_audio_setup(models=True)
+            return
+        if self._lecture.get('speaker_reviewed'):
+            accepted = QMessageBox.question(self, 'Run speaker detection again?',
+                'Save the current labels to lecture history and replace them with a new automatic pass?',
+                QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+            if accepted != QMessageBox.Yes:
+                return
+        count, ok = QInputDialog.getInt(self, 'Speakers', 'Expected speakers (0 to detect automatically)', 0, 0, 40)
+        if ok:
+            self._start_diarization(count or None)
+
+    def _start_diarization_if_ready(self):
+        if self._speaker_job or not self._transcript_segments or self._lecture.get('speaker_reviewed'):
+            return
+        from annie.diarization import diarization_ready
+        if self._lecture.get('audio_path') and diarization_ready(self._diarization_model):
+            self._start_diarization()
+
+    def _start_diarization(self, count=None):
+        audio = self._lecture.get('audio_path')
+        if self._speaker_job or not audio or not Path(audio).is_file() or not self._transcript_segments:
+            return
+        document = self._lecture
+        job = SpeakerDetection(audio, self._diarization_model, count, self)
+        self._speaker_job = job
+        signature = self._speaker_signature(document)
+        job.result.connect(lambda turns: self._finish_diarization_result(document, signature, job, turns))
+        job.error.connect(lambda error: self.transcript_tools.set_status(error)
+                          if document is self._lecture else None)
+        job.finished.connect(self._diarization_finished)
+        self.transcript_tools.set_status('Identifying speakers on this computer…')
+        self._refresh_speaker_controls()
+        self._start_job(job)
+
+    @staticmethod
+    def _speaker_signature(document):
+        return (document.get('audio_path'), dict(document.get('speaker_names', {})),
+                tuple((row.get('id'), row['start'], row['end'], row.get('speaker'), row.get('edited_text'))
+                      for row in document['segments']))
+
+    def _finish_diarization_result(self, document, signature, job, turns):
+        if job.cancel_event.is_set():
+            return
+        if self._speaker_signature(document) != signature:
+            if document is self._lecture:
+                self.transcript_tools.set_status('The audio or speaker labels changed. Run speaker analysis again to apply a new result.')
+            return
+        self._apply_diarization(document, turns)
+
+    def _apply_diarization(self, document, turns):
+        if not turns:
+            self.transcript_tools.set_status('No speaker intervals were detected. The existing transcript is available.')
+            return
+        from annie.diarization import assign_speaker_words, assign_speakers
+        from annie.lecture_archive import archive_segments
+        originals = archive_segments(document.get('source_segments', document['segments']))
+        document['source_segments'] = originals
+        rows = archive_segments(document['segments'])
+        assignments = assign_speakers(originals, turns)
+        timed_words = assign_speaker_words(originals, turns)
+        history = document.setdefault('revisions', [])
+        history.append({'saved_at': datetime.datetime.now().isoformat(timespec='seconds'),
+                        'segments': rows, 'speaker_names': dict(document.get('speaker_names', {}))})
+        del history[:-25]
+        by_original = {}
+        for row in rows:
+            by_original.setdefault(row.get('source_segment_id', row['id']), []).append(row)
+        passages = []
+        for original in originals:
+            identity = original['id']
+            previous = by_original.get(identity, [original])
+            if any('edited_text' in row for row in previous):
+                current = assign_speakers(previous, turns)
+                passages.extend({**row, 'speaker': current.get(row['id'], '')} for row in previous)
+                continue
+            words = timed_words.get(identity, [])
+            speakers = {word['speaker'] for word in words if word['speaker']}
+            if len(speakers) <= 1 or ' '.join(''.join(word['text'] for word in words).split()) != ' '.join(original['text'].split()):
+                passages.append({**original, 'speaker': assignments.get(identity, '')})
+                continue
+            from itertools import groupby
+            for index, (speaker, group) in enumerate(groupby(words, key=lambda word: word['speaker'])):
+                items = list(group)
+                passages.append({**original, 'id': f'{identity}-{index}', 'source_segment_id': identity,
+                    'speaker': speaker, 'start': items[0]['start'], 'end': items[-1]['end'],
+                    'text': ''.join(word['text'] for word in items).strip(), 'words': items})
+        document['segments'][:] = passages
+        document['speaker_names'] = {}
+        document['speaker_turns'] = turns
+        document['speaker_reviewed'] = False
+        if document is self._lecture:
+            self._render_transcript()
+            self._save_active_lecture()
+            self.transcript_tools.set_status('Speaker labels are ready. Choose a speaker or a review filter.')
+        else:
+            self._persist_lecture(document)
+
+    def _cancel_diarization(self):
+        if self._speaker_job:
+            self._speaker_job.cancel_event.set()
+
+    def _diarization_finished(self):
+        self._speaker_job = None
+        self._refresh_speaker_controls()
+
+    def _seek_transcript(self, seconds, *, play=False):
+        if self.stack.currentIndex() != 1:
+            self._switch_tab(1)
+        exact = next((r for r in self._transcript_ranges if r[2]['start'] == seconds), None)
+        match = exact or next((r for r in self._transcript_ranges
+                               if r[2]['start'] <= seconds < r[2]['end']), None)
+        if match is None:
+            original = next((row for row in self._lecture.get('source_segments', ())
+                             if row['start'] <= seconds < row['end']), None)
+            if original:
+                pieces = (row for row in self._transcript_ranges if row[2].get('source_segment_id') == original['id'])
+                match = min(pieces, key=lambda row: abs(row[2]['start'] - seconds), default=None)
+        if match is None and self.speaker_panel.selection()[0] != 'all':
+            self.speaker_panel.filters.setCurrentIndex(0)
+            self._seek_transcript(seconds, play=play)
+            return
+        if match is not None:
+            cursor = self.transcript_area.textCursor()
+            cursor.setPosition(match[0])
+            cursor.setPosition(match[1], QTextCursor.KeepAnchor)
+            self.transcript_area.setTextCursor(cursor)
+            self.transcript_area.ensureCursorVisible()
+        if play:
+            self.transcript_tools.play_at(seconds)
+
+    def _show_transcript_evidence(self, seconds):
+        action = self.review_page._current()
+        self._open_evidence_source(action.get('source_name') if action else None, seconds)
+
+    def _open_evidence_source(self, source, seconds):
+        if source and source != self._lecture_source_name:
+            if self.worker and (self.worker.isRunning() or self.worker in self._jobs):
+                self.operation_status.setText('Finish transcription before opening the evidence lecture.')
+                return
+            match = next((path for path, document in library_entries(DATA_DIR)
+                          if document['source_name'] == source), None)
+            if not match or not self._open_lecture_path(match):
+                self.operation_status.setText('This finding has a saved quote. Its lecture archive is unavailable.')
+                return
+        self._seek_transcript(seconds, play=True)
 
     def _on_summary(self, summary_text: str):
-        self.record_btn.setText("Start recording")
-        self.record_btn.setEnabled(True)
-        self._set_record_button_state("idle")
-        self._last_notes = summary_text.strip()
-        self.notes_area.setPlainText(self._last_notes)
+        if summary_text.startswith(('# Recording Error', '# Incomplete Recording', '# Transcription Error',
+                                    '# Empty Recording', '# Empty Meeting', '# Notes Error')):
+            self.operation_status.setText(summary_text.splitlines()[0].lstrip('# '))
+            return
+        self._store_generated('notes', summary_text, expected='')
         self._switch_tab(0)
 
+    def _refresh_due_cards(self):
+        import sqlite3
+        from annie.flashcard_review import CardReviews
+        try:
+            count = sum(1 for _ in CardReviews(DATA_DIR).due())
+        except (OSError, ValueError, sqlite3.Error):
+            self.due_cards.hide()
+            return
+        self.due_cards.setText(f'Review flashcards · {count} due')
+        self.due_cards.setVisible(bool(count))
+
+    def _review_flashcards(self):
+        import sqlite3
+        from annie.gui.flashcard_review import FlashcardSession
+        if self._save_active_lecture():
+            try:
+                FlashcardSession(DATA_DIR, self).exec_()
+            except (OSError, ValueError, sqlite3.Error):
+                self.operation_status.setText('Flashcard review could not open the local library.')
+            self._refresh_due_cards()
+
+    def _add_flashcard(self):
+        from annie.flashcard_review import export_tsv, parse_cards
+        front, ok = QInputDialog.getText(self, 'Add flashcard', 'Question')
+        if not ok or not front.strip():
+            return
+        back, ok = QInputDialog.getMultiLineText(self, 'Add flashcard', 'Answer')
+        if ok and back.strip():
+            rows = parse_cards(self.flashcards_area.toPlainText())
+            self.flashcards_area.setPlainText(export_tsv([*rows, (front.strip(), back.strip(), '')]))
+
+    def _export_flashcards(self):
+        from annie.flashcard_review import export_tsv, parse_cards
+        rows = parse_cards(self.flashcards_area.toPlainText())
+        if not rows:
+            self.operation_status.setText('Add a flashcard with a question and answer before exporting.')
+            return
+        path, _ = QFileDialog.getSaveFileName(self, 'Export Anki TSV', 'flashcards.tsv', 'TSV (*.tsv)')
+        if path:
+            from annie.secure_storage import atomic_write
+            try:
+                atomic_write(path, export_tsv(rows).encode('utf-8'))
+            except OSError as exc:
+                self.operation_status.setText(f'Could not export flashcards: {exc}')
+
     def _generate_anki(self):
-        text = self._last_notes or self.notes_area.toPlainText() or self.transcript_area.toPlainText()
+        text = self.notes_area.toPlainText() or self._last_transcript
         if not text:
             QMessageBox.information(self, "No Content", "Record or import a lecture first.")
             return
@@ -1575,36 +2263,95 @@ class MeetingWindow(QDialog):
 
         user_notes = self.user_scratchpad.toPlainText().strip()
         self._anki_thread = AnkiGenThread(text, self.subject_input.text().strip(), user_notes=user_notes)
-        self._anki_thread.finished.connect(self._on_anki_finished)
+        document = self._lecture
+        expected = self.flashcards_area.toPlainText()
+        self._anki_thread.finished.connect(lambda deck: self._on_anki_finished(deck, document, expected))
         self._anki_thread.error.connect(self._on_anki_error)
         self._start_job(self._anki_thread)
 
-    def _on_anki_finished(self, deck):
+    def _on_anki_finished(self, deck, document=None, expected=None):
         self.gen_anki_btn.setEnabled(True)
         self.gen_anki_btn.setText("Make flashcards")
-        self.flashcards_area.setPlainText(deck)
-        self._switch_tab(2)
+        from annie.flashcard_review import export_tsv, parse_cards
+        rows = parse_cards(deck)
+        if not rows:
+            self.operation_status.setText('Generated cards did not contain a valid TSV deck.')
+            return
+        self._store_generated('cards', export_tsv(rows), document, expected=expected)
+        if document is None or document is self._lecture:
+            self._switch_tab(2)
 
     def _on_anki_error(self, err):
         self.gen_anki_btn.setEnabled(True)
         self.gen_anki_btn.setText("Make flashcards")
-        self.flashcards_area.setPlainText(f"⚠️ Error generating flashcards: {err}")
-        self._switch_tab(2)
+        self.operation_status.setText(f"Flashcards could not be generated: {err}")
+
+    def _render_chat(self):
+        session = self._lecture.get('chat', [])
+        self.chat_history.setPlainText('\n\n'.join(
+            ('You' if row['role'] == 'user' else 'Annie') + ': ' + row['text']
+            for row in session))
+        self.chat_history.moveCursor(QTextCursor.End)
+        self.use_chat_source.setText('Attach this lecture to the conversation' if not self._lecture.get('chat_context')
+                                     else 'Update attached lecture material')
+
+    def _new_chat(self):
+        if self._lecture.get('chat'):
+            self._lecture.setdefault('past_chats', []).append(
+                {'chat': self._lecture.pop('chat'), 'context': self._lecture.get('chat_context', '')})
+            self._lecture.pop('chat_context', None)
+            self._render_chat()
+            self._save_active_lecture()
+
+    def _restore_chat(self):
+        sessions = self._lecture.get('past_chats', [])
+        if not sessions:
+            self.operation_status.setText('There are no previous conversations for this lecture.')
+            return
+        choices = [f"{i+1}. {item['chat'][0]['text'][:60]}" for i, item in enumerate(sessions)]
+        choice, accepted = QInputDialog.getItem(self, 'Conversations', 'Conversation', choices, 0, False)
+        if accepted:
+            saved = sessions.pop(choices.index(choice))
+            self._new_chat()
+            self._lecture.update(chat=saved['chat'], chat_context=saved['context'])
+            self._render_chat()
+            self._save_active_lecture()
 
     def _send_chat(self):
-        q = self.chat_input.text().strip()
-        if not q:
+        question = self.chat_input.text().strip()
+        if not question or any(isinstance(job, StudyChatThread) and job.isRunning() for job in self._jobs):
             return
+        document = self._lecture
+        session = document.setdefault('chat', [])
+        session.append({'role': 'user', 'text': question})
         self.chat_input.clear()
-        self.chat_history.append(f"\n👤 **You:** {q}\n")
+        self._render_chat()
+        context = ''
+        if self.use_chat_source.isChecked():
+            self.use_chat_source.setChecked(False)
+            context = (self.notes_area.toPlainText() or self._last_transcript)[:30000]
+            if context:
+                document['chat_context'] = context
+                self._render_chat()
+                self.operation_status.setText('Sending the selected lecture material and dialog to Gemini…')
+        if document.get('chat_context'):
+            context = 'Selected lecture material, use as reference only:\n' + document['chat_context'] + '\n\n'
+        history = '\n'.join(f"{row['role']}: {row['text']}" for row in session[-20:])
+        self._save_active_lecture()
+        thread = StudyChatThread(context + history[-24000:])
+        thread.finished.connect(lambda reply: self._on_chat_finished(reply, document, session))
+        thread.error.connect(lambda err: self.operation_status.setText(f'Assistant: {err}'))
+        self._start_job(thread)
 
-        self._chat_thread = StudyChatThread(q)
-        self._chat_thread.finished.connect(self._on_chat_finished)
-        self._chat_thread.error.connect(lambda err: self.chat_history.append(f"⚠️ Error: {err}\n"))
-        self._start_job(self._chat_thread)
-
-    def _on_chat_finished(self, reply):
-        self.chat_history.append(f"🤖 **Annie:**\n{reply}\n" + "─"*40)
+    def _on_chat_finished(self, reply, document=None, session=None):
+        document = self._lecture if document is None else document
+        session = document.setdefault('chat', []) if session is None else session
+        session.append({'role': 'assistant', 'text': reply})
+        if document is self._lecture:
+            self._render_chat()
+            self._save_active_lecture()
+        else:
+            self._persist_lecture(document)
 
     def _show_export_menu(self):
         menu = QMenu(self)
@@ -1621,33 +2368,43 @@ class MeetingWindow(QDialog):
                 color: {EMERALD};
             }}
         """)
-        a_copy = menu.addAction("📋 Copy Notes to Clipboard")
-        a_obsidian = menu.addAction("💾 Save as Obsidian Markdown (.md)")
-        a_pdf = menu.addAction("🌐 Export HTML / Print to PDF")
-        a_txt = menu.addAction("📄 Save Raw Transcript (.txt)")
+        notes_commands = (('Copy notes', self._copy_notes), ('Obsidian Markdown (.md)', self._save_obsidian),
+                          ('Notes as HTML (.html)', self._export_pdf))
+        transcript_commands = (('Transcript text (.txt)', self._save_txt), ('Timed captions (.vtt)', self._export_captions))
+        sections = [
+            ('Notes', notes_commands, bool(self.notes_area.toPlainText().strip())),
+            ('Transcript', transcript_commands, bool(self._last_transcript)),
+        ]
+        in_transcript = self.stack.currentIndex() == 1
+        if in_transcript:
+            sections.reverse()
+        for section, commands, enabled in sections:
+            menu.addSection(section)
+            for title, callback in commands:
+                action = menu.addAction(title, callback)
+                action.setEnabled(enabled and (callback != self._export_captions or bool(self._transcript_segments)))
 
-        action = menu.exec_(self.export_btn.mapToGlobal(self.export_btn.rect().bottomLeft()))
-        if action == a_copy:
-            self._copy_notes()
-        elif action == a_obsidian:
-            self._save_obsidian()
-        elif action == a_pdf:
-            self._export_pdf()
-        elif action == a_txt:
-            self._save_txt()
+        anchor = self.transcript_tools.export if in_transcript else self.export_btn
+        menu.exec_(anchor.mapToGlobal(anchor.rect().bottomLeft()))
 
     def _copy_notes(self):
-        text = self._last_notes or self.notes_area.toPlainText()
+        text = self.notes_area.toPlainText()
         if text:
             QApplication.clipboard().setText(text)
-            self.export_btn.setText("✓ Copied!")
-            QTimer.singleShot(2000, lambda: self.export_btn.setText("Export notes ▾"))
+            if self.stack.currentIndex() == 1:
+                self.operation_status.setText('Notes copied to clipboard.')
+            else:
+                self.export_btn.setText("Copied!")
+                self.export_feedback_timer.start()
+
+    def _restore_export_label(self):
+        self.export_btn.setText('Export…')
 
     def _save_obsidian(self):
-        text = self._last_notes or self.notes_area.toPlainText()
+        text = self.notes_area.toPlainText()
         if not text:
             return
-        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        date_str = self._lecture.get("lecture_date") or datetime.date.today().isoformat()
         subj = self.subject_input.text().strip() or "Lecture"
         frontmatter = f"---\ntags:\n  - university\n  - lecture\n  - {subj.replace(' ', '_').lower()}\ndate: {date_str}\n---\n\n"
         path, _ = QFileDialog.getSaveFileName(self, "Save Obsidian Note", f"{subj.replace(' ', '_')}_{date_str}.md", "Markdown (*.md)")
@@ -1656,11 +2413,12 @@ class MeetingWindow(QDialog):
                 f.write(frontmatter + text)
 
     def _export_pdf(self):
-        text = self._last_notes or self.notes_area.toPlainText()
+        text = self.notes_area.toPlainText()
         if not text:
             return
-        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        date_str = self._lecture.get("lecture_date") or datetime.date.today().isoformat()
         subj = self.subject_input.text().strip() or "Lecture Notes"
+        subj, text = escape(subj), escape(text)
         html = f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>{subj}</title>
@@ -1670,19 +2428,38 @@ class MeetingWindow(QDialog):
   h3 {{ font-size: 16px; color: #D9FFA5; margin-top: 20px; }}
 </style></head>
 <body><h1>{subj} ({date_str})</h1><pre style="font-family:inherit; white-space:pre-wrap;">{text}</pre></body></html>"""
-        path, _ = QFileDialog.getSaveFileName(self, "Export HTML / PDF", f"{subj.replace(' ', '_')}_{date_str}.html", "HTML (*.html)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export notes as HTML", f"{subj.replace(' ', '_')}_{date_str}.html", "HTML (*.html)")
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(html)
             webbrowser.open(path)
 
     def _save_txt(self):
-        text = self.transcript_area.toPlainText()
+        text = self._last_transcript
         if text:
             path, _ = QFileDialog.getSaveFileName(self, "Save Transcript", "transcript.txt", "Text (*.txt)")
             if path:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(text)
+
+    def _export_captions(self):
+        if not self._transcript_segments:
+            return
+        from annie.secure_storage import atomic_write
+        path, _ = QFileDialog.getSaveFileName(self, 'Export timed captions', 'transcript.vtt', 'WebVTT (*.vtt)')
+        if not path:
+            return
+        labels = self._lecture.get('speaker_names', {})
+        rows = ['WEBVTT', '']
+        for segment in self._transcript_segments:
+            rows.append(f"{timestamp(segment['start'])} --> {timestamp(segment['end'])}")
+            text = escape(segment.get('edited_text', segment['text']))
+            speaker = segment.get('speaker')
+            rows.extend([(f"<v {escape(labels.get(speaker, speaker))}>{text}</v>" if speaker else text), ''])
+        try:
+            atomic_write(path, '\n'.join(rows).encode('utf-8'))
+        except OSError as exc:
+            self.operation_status.setText(f'Could not export captions: {exc}')
 
     def is_active(self) -> bool:
         return self._recording
@@ -1690,23 +2467,50 @@ class MeetingWindow(QDialog):
     def _on_worker_status(self, status):
         self.operation_status.setText(status)
 
+    def _set_capture_status(self, state):
+        self.capture_status.setText(f'Audio input · {state}' if state else '')
+        self.capture_status.setVisible(bool(state))
+
+    def _refresh_audio_controls(self):
+        transcribing = self._transcribing()
+        preparing = bool(self._audio_setup and self._audio_setup.task)
+        ready = not (transcribing or preparing)
+        self.recording_panel.setVisible(self.stack.currentIndex() == 0 and not self._recording_session)
+        self.signal_widget.setVisible(self._recording)
+        self.stop_recording_btn.setVisible(self._recording_session)
+        self.stop_recording_btn.setEnabled(self._recording)
+        self.stop_recording_btn.setText('Stop recording' if self._recording else 'Finishing…')
+        self.audio_check.setEnabled(ready)
+        self.import_audio_button.setEnabled(ready)
+        self.library_button.setEnabled(not transcribing)
+        self.record_btn.setEnabled(ready)
+        self.record_btn.setText('Processing audio…' if transcribing else 'Start recording')
+        state = 'busy' if transcribing else 'idle'
+        if self.record_btn.property('state') != state:
+            self._set_record_button_state(state)
+
+    def _on_capture_started(self):
+        if self._recording:
+            self._set_capture_status('Recording')
+            self.signal_widget.set_active(True)
+
     def _on_capture_finished(self):
         if self._recording:
             self._recording = False
             self.meeting_state_changed.emit(False)
         self.signal_widget.set_active(False)
-        self.record_btn.setEnabled(False)
-        self.record_btn.setText("Finishing transcript…")
-        self._set_record_button_state("busy")
+        self._set_capture_status('Stopped')
+        self._refresh_audio_controls()
 
     def _on_backlog(self, seconds):
         if seconds >= 2:
-            action = "Recording" if self._recording else "Finishing transcript"
-            self.operation_status.setText(f"{action} · {seconds:.0f}s of audio pending")
+            self.operation_status.setText(f"Processing · {seconds:.0f}s of audio pending")
 
     def _on_recording_saved(self, path):
         self._last_recording_path = path
+        self._lecture['audio_path'] = path
         self.operation_status.setToolTip(f"Audio recording: {path}")
+        self._save_active_lecture()
 
     def _start_job(self, job):
         # Retain all QThreads, including jobs whose custom 'finished' signal
@@ -1721,18 +2525,20 @@ class MeetingWindow(QDialog):
                 self._jobs.discard(job)
                 if job is self.worker:
                     self._save_transcript_archive()
-                    self.record_btn.setEnabled(True)
-                    self.record_btn.setText("Start recording")
-                    self._set_record_button_state("idle")
+                    self._start_diarization_if_ready()
+                    self._recording_session = False
                     self.signal_widget.set_active(False)
+                    self._set_capture_status('')
                     if self._recording:
                         self._recording = False
                         self.meeting_state_changed.emit(False)
+                    self._refresh_audio_controls()
         if not self._jobs:
             self._job_timer.stop()
 
     def has_running_jobs(self):
         return (any(job.isRunning() for job in self._jobs) or
+                (self._audio_setup is not None and self._audio_setup.task is not None) or
                 self.updates_panel.service.is_running() or
                 self.updates_panel.downloads.is_running() or
                 self.timetable_view.has_running_job() or self.study_page.has_running_job() or
@@ -1740,6 +2546,8 @@ class MeetingWindow(QDialog):
                 or self.lab_page.has_running_job())
 
     def stop_jobs(self):
+        if self._audio_setup is not None:
+            self._audio_setup.reject()
         self.updates_panel.service.stop()
         self.updates_panel.downloads.cancel()
         if self.updates_panel.dialog is not None:
@@ -1748,6 +2556,7 @@ class MeetingWindow(QDialog):
         self.planner_page.stop_background()
         self.review_page.stop_background()
         self.lab_page.stop_background()
+        self._cancel_diarization()
         if self._mini_dock is not None:
             self._mini_dock.hide_immediately()
         for job in list(self._jobs):
@@ -1761,6 +2570,9 @@ class MeetingWindow(QDialog):
         self.meeting_state_changed.emit(False)
 
     def closeEvent(self, event):
+        if not self._save_active_lecture():
+            event.ignore()
+            return
         self.radar_page.stop_receiver()
         self.stop_jobs()
         if sys.platform == 'darwin' and not self.testAttribute(Qt.WA_DontShowOnScreen):

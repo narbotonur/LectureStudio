@@ -71,6 +71,12 @@ class WhisperService:
             if self._active == session_id:
                 self._active = self._events = None
 
+    def abort_preparation(self, session_id):
+        """Terminate an explicit setup download, which holds no recording."""
+        with self._lock:
+            if session_id == self._active and self.is_running:
+                self._proc.terminate()
+
     def _deliver(self, message):
         with self._lock:
             session_id = message.get('session_id')
